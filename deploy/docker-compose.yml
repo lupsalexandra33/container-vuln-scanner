@@ -1,0 +1,4 @@
+# Service dependencies for local development.
+#
+# Currently empty. Clair and PostgreSQL are added in Stage 3.1 and 4.3.
+services: {}

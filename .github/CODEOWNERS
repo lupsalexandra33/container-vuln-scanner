@@ -1,0 +1,22 @@
+# Reviewers are assigned automatically from the directory a pull request
+# touches. Anything not listed here needs a review from anyone on the team.
+
+/pkg/model/         @lupsalexandra33
+/pkg/normalize/     @lupsalexandra33
+/pkg/correlate/     @lupsalexandra33
+/pkg/trust/         @lupsalexandra33
+/pkg/policy/        @lupsalexandra33
+
+/pkg/scanner/       @RazvanMasgras
+/pkg/orchestrator/  @RazvanMasgras
+/pkg/sbom/          @RazvanMasgras
+/deploy/            @RazvanMasgras
+
+/pkg/enrich/        @loonailove
+/pkg/layers/        @loonailove
+/pkg/store/         @loonailove
+/pkg/report/        @loonailove
+/cmd/               @loonailove
+
+# Shared contracts: changes here affect everyone.
+/docs/architecture.md  @lupsalexandra33 @RazvanMasgras @loonailove
