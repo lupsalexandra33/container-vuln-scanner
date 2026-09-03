@@ -10,7 +10,7 @@ Digest:   alpine@sha256:0f2d5c38dd7a4f4f733e688e3a6733cb5ab1ac6e3cb4603a5dd564e5
 | trivy | Version: 0.74.0 |
 | grype | Version:             0.118.0 |
 | syft | Version:       1.51.1 |
-| osv-scanner |  |
+| osv-scanner | Version: 1.9.2 |
 
 ## Observations
 

@@ -10,7 +10,7 @@ Digest:   nginx@sha256:2bcabc23b45489fb0885d69a06ba1d648aeda973fae7bb981bafbb884
 | trivy | Version: 0.74.0 |
 | grype | Version:             0.118.0 |
 | syft | Version:       1.51.1 |
-| osv-scanner |  |
+| osv-scanner | Version: 1.9.2 |
 
 ## Observations
 
