@@ -81,4 +81,3 @@ func TestEnricher(t *testing.T) {
 		t.Errorf("expected EPSS=0.00150, got %f", val.EPSSScore)
 	}
 }
-

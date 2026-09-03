@@ -46,4 +46,3 @@ type EPSSResponse struct {
 		Date       string `json:"date"`
 	} `json:"data"`
 }
-

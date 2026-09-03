@@ -49,4 +49,3 @@ func (c *DiskCache) Write(key string, value any) error {
 	filePath := filepath.Join(c.dir, key+".json")
 	return os.WriteFile(filePath, data, 0644)
 }
-

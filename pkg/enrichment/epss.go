@@ -102,4 +102,3 @@ func (e *EPSSClient) FetchScores(ctx context.Context, cves []string) (map[string
 
 	return results, nil
 }
-

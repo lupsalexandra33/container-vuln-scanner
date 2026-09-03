@@ -75,4 +75,3 @@ func (k *KEVClient) FetchMap(ctx context.Context) (map[string]KEVRecord, error) 
 
 	return lookup, nil
 }
-

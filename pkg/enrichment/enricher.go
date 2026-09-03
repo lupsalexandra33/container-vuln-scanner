@@ -71,4 +71,3 @@ func (en *Enricher) EnrichAll(ctx context.Context, identifiers []string) (map[st
 
 	return result, nil
 }
-
