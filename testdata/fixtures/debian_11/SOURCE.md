@@ -10,7 +10,7 @@ Digest:   debian@sha256:6f519a81440354a85eb592c5f32109ab80605f6b892455983a6f618b
 | trivy | Version: 0.74.0 |
 | grype | Version: 0.118.0 |
 | syft | Version: 1.51.1 |
-| osv-scanner |  |
+| osv-scanner | Version: 1.9.2 |
 
 ## Observations
 

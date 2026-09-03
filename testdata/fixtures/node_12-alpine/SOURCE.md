@@ -10,7 +10,7 @@ Digest:   node@sha256:d4b15b3d48f42059a15bd659be60afe21762aae9d6cbea6f124440895c
 | trivy | Version: 0.74.0 |
 | grype | Version:             0.118.0 |
 | syft | Version:       1.51.1 |
-| osv-scanner |  |
+| osv-scanner | Version: 1.9.2 |
 
 ## Observations
 
