@@ -12,7 +12,7 @@
 /pkg/sbom/          @RazvanMasgras
 /deploy/            @RazvanMasgras
 
-/pkg/enrich/        @loonailove
+/pkg/enrichment/        @loonailove
 /pkg/layers/        @loonailove
 /pkg/store/         @loonailove
 /pkg/report/        @loonailove
