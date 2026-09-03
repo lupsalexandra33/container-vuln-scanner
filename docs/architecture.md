@@ -27,7 +27,7 @@
 | `pkg/scanner/adapters` | one file per tool | Razvan |
 | `pkg/orchestrator` | concurrent execution | Razvan |
 | `pkg/sbom` | package inventory | Razvan |
-| `pkg/enrich` | CVSS, EPSS, KEV | Daiana |
+| `pkg/enrichment` | CVSS, EPSS, KEV | Daiana |
 | `pkg/layers` | layer attribution | Daiana |
 | `pkg/store` | persistence and history | Daiana |
 | `pkg/report` | output formats | Daiana |
