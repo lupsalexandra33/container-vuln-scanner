@@ -14,11 +14,12 @@ Digest:   alpine@sha256:0f2d5c38dd7a4f4f733e688e3a6733cb5ab1ac6e3cb4603a5dd564e5
 
 ## Observations
 
-<!--
-Fill this in by hand. For each tool, note:
-  - how many findings it reported
-  - whether PURL identifiers are present and complete
-  - how package names are written
-  - whether "no data available" is distinguishable from "no findings"
-  - anything surprising
--->
+Trivy reports 0 findings, Grype reports 39, with zero overlap.
+
+Alpine's secdb records vulnerabilities together with the version that fixed them,
+it is a fix ledger. Alpine 3.14 is past end of life, so nothing further is added and
+Trivy has nothing to report. Grype falls back to matching installed versions against
+NVD upstream ranges and continues to report.
+
+The image is almost certainly vulnerable. This is the clearest case in the baseline
+set that zero findings must not be presented as a clean result.
