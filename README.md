@@ -95,7 +95,7 @@ Active development, targeting September 2026.
 - [ ] Normalisation
 - [ ] Correlation and confidence scoring
 - [ ] Conflict resolution
-- [ ] Enrichment · CVSS, EPSS, CISA KEV
+- [x] Enrichment · CVSS, EPSS, CISA KEV
 - [ ] Reporting
 - [ ] Policy engine
 - [ ] CLI
