@@ -81,3 +81,41 @@ func TestEnricher(t *testing.T) {
 		t.Errorf("expected EPSS=0.00150, got %f", val.EPSSScore)
 	}
 }
+
+func TestEnricher_GracefulDegradation(t *testing.T) {
+	// Server that always throws 500
+	failingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer failingServer.Close()
+
+	tmpDir, err := os.MkdirTemp("", "enrich_fail_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cache, _ := NewDiskCache(tmpDir)
+	enricher := &Enricher{
+		kevClient:  NewKEVClient(cache, failingServer.URL),
+		epssClient: NewEPSSClient(cache, failingServer.URL),
+	}
+
+	res, err := enricher.EnrichAll(context.Background(), []string{"CVE-2023-45853"})
+	if err != nil {
+		t.Fatalf("expected nil error on network failure, got: %v", err)
+	}
+
+	val, found := res["CVE-2023-45853"]
+	if !found {
+		t.Fatalf("expected CVE-2023-45853 to be present in degraded results")
+	}
+
+	if val.Enriched {
+		t.Errorf("expected Enriched=false when both endpoints fail, got true")
+	}
+
+	if val.Warning == "" {
+		t.Errorf("expected warning string describing the skipped feeds, got empty")
+	}
+}

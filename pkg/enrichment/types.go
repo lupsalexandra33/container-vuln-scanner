@@ -2,7 +2,7 @@ package enrichment
 
 import "time"
 
-// ThreatData wraps the threat intel we pull for a specific vulnerability.
+// ThreatData wraps the threat intel pulled for a specific vulnerability.
 type ThreatData struct {
 	CVE        string     `json:"cve"`
 	InKEV      bool       `json:"in_kev"`
@@ -10,6 +10,10 @@ type ThreatData struct {
 	EPSSScore  float64    `json:"epss_score"`
 	Percentile float64    `json:"epss_percentile"`
 	EnrichedAt time.Time  `json:"enriched_at"`
+
+	// Graceful degradation fields
+	Enriched bool   `json:"enriched"`
+	Warning  string `json:"warning,omitempty"`
 }
 
 // KEVRecord holds the actionable metadata from CISA's catalog.
