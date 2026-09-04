@@ -3,6 +3,7 @@ package adapters
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
@@ -20,11 +21,26 @@ func (t *TrivyAdapter) Name() string {
 }
 
 func (t *TrivyAdapter) Version(ctx context.Context) (model.ToolVersion, error) {
-	// A real implementation would parse 'trivy --version --format json'
-	// For now, we mock the retrieval.
+	res, err := scanner.RunTool(ctx, "", "trivy", "version", "--format", "json")
+	if err != nil {
+		return model.ToolVersion{}, fmt.Errorf("failed to execute trivy version: %w", err)
+	}
+
+	var output struct {
+		Version         string `json:"Version"`
+		VulnerabilityDB struct {
+			Version   int       `json:"Version"`
+			UpdatedAt time.Time `json:"UpdatedAt"`
+		} `json:"VulnerabilityDB"`
+	}
+
+	if err := json.Unmarshal(res.Stdout, &output); err != nil {
+		return model.ToolVersion{}, fmt.Errorf("failed to parse trivy version output: %w", err)
+	}
+
 	return model.ToolVersion{
-		Version:           "0.0.0-mock",
-		DatabaseTimestamp: time.Now(),
+		Version:           output.Version,
+		DatabaseTimestamp: output.VulnerabilityDB.UpdatedAt,
 	}, nil
 }
 
