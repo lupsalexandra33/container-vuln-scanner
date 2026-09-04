@@ -74,6 +74,9 @@ func (g *GrypeAdapter) Scan(ctx context.Context, target model.Target) (model.Raw
 	if err != nil {
 		return model.RawResult{}, err
 	}
+	if res.ExitCode != 0 && len(res.Stdout) == 0 {
+		return model.RawResult{}, fmt.Errorf("grype scan failed (exit code %d): %s", res.ExitCode, string(res.Stderr))
+	}
 
 	var root struct {
 		Matches []struct {

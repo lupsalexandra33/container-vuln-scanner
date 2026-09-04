@@ -47,7 +47,7 @@ func (t *TrivyAdapter) Version(ctx context.Context) (model.ToolVersion, error) {
 func (t *TrivyAdapter) Capabilities() model.Capabilities {
 	return model.Capabilities{
 		FindingClasses:  []string{"vulnerability", "misconfiguration", "secret"},
-		TakesSBOM:       false,
+		TakesSBOM:       true,
 		RequiresNetwork: false, // assuming DB is cached or offline mode is used
 	}
 }
@@ -58,14 +58,20 @@ func (t *TrivyAdapter) Available(ctx context.Context) error {
 }
 
 func (t *TrivyAdapter) Scan(ctx context.Context, target model.Target) (model.RawResult, error) {
-	// Execute Trivy: trivy image --scanners vuln --format json --quiet <image>
-	res, err := scanner.RunTool(ctx, "", "trivy", "image", "--scanners", "vuln", "--format", "json", "--quiet", target.ImageReference)
+	var args []string
+	if target.SBOMPath != "" {
+		args = []string{"sbom", "--format", "json", "--quiet", target.SBOMPath}
+	} else {
+		args = []string{"image", "--scanners", "vuln", "--format", "json", "--quiet", target.ImageReference}
+	}
+
+	res, err := scanner.RunTool(ctx, "", "trivy", args...)
 	if err != nil {
 		return model.RawResult{}, err
 	}
-
-	// It's possible Trivy exited non-zero but still generated JSON stdout if we used --exit-code.
-	// But without it, it should exit 0 on success. If there's no stdout, that's an issue.
+	if res.ExitCode != 0 && len(res.Stdout) == 0 {
+		return model.RawResult{}, fmt.Errorf("trivy scan failed (exit code %d): %s", res.ExitCode, string(res.Stderr))
+	}
 
 	var root struct {
 		Results []struct {
