@@ -3,6 +3,7 @@ package adapters
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
@@ -20,9 +21,32 @@ func (g *GrypeAdapter) Name() string {
 }
 
 func (g *GrypeAdapter) Version(ctx context.Context) (model.ToolVersion, error) {
+	res, err := scanner.RunTool(ctx, "", "grype", "version", "-o", "json")
+	if err != nil {
+		return model.ToolVersion{}, fmt.Errorf("failed to execute grype version: %w", err)
+	}
+
+	var verOutput struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(res.Stdout, &verOutput); err != nil {
+		return model.ToolVersion{}, fmt.Errorf("failed to parse grype version output: %w", err)
+	}
+
+	var dbTimestamp time.Time
+	dbRes, err := scanner.RunTool(ctx, "", "grype", "db", "status", "-o", "json")
+	if err == nil && len(dbRes.Stdout) > 0 {
+		var dbOutput struct {
+			Built time.Time `json:"built"`
+		}
+		if json.Unmarshal(dbRes.Stdout, &dbOutput) == nil {
+			dbTimestamp = dbOutput.Built
+		}
+	}
+
 	return model.ToolVersion{
-		Version:           "0.0.0-mock",
-		DatabaseTimestamp: time.Now(),
+		Version:           verOutput.Version,
+		DatabaseTimestamp: dbTimestamp,
 	}, nil
 }
 
