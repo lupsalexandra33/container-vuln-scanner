@@ -2,8 +2,10 @@ package enrichment
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Enricher orchestrates KEV and EPSS lookups with local caching.
@@ -27,8 +29,8 @@ func NewEnricher(cacheDir string) (*Enricher, error) {
 	}, nil
 }
 
-// EnrichAll enriches vulnerability identifiers. Non-CVE identifiers are skipped
-// since KEV and EPSS feeds only support CVE mappings.
+// EnrichAll enriches vulnerability identifiers. If an external service fails,
+// findings are marked unenriched with a warning rather than failing the scan.
 func (en *Enricher) EnrichAll(ctx context.Context, identifiers []string) (map[string]ThreatData, error) {
 	var cves []string
 	for _, id := range identifiers {
@@ -37,36 +39,71 @@ func (en *Enricher) EnrichAll(ctx context.Context, identifiers []string) (map[st
 		}
 	}
 
-	// Fetch KEV catalog once into memory if not already cached
+	result := make(map[string]ThreatData, len(cves))
+	if len(cves) == 0 {
+		return result, nil
+	}
+
+	// 1. Attempt KEV lookup (fail-soft)
+	var kevErr error
 	en.mu.Lock()
 	if en.kevLookup == nil {
 		lookup, err := en.kevClient.FetchMap(ctx)
 		if err != nil {
-			en.mu.Unlock()
-			return nil, err
+			kevErr = err
+		} else {
+			en.kevLookup = lookup
 		}
-		en.kevLookup = lookup
 	}
 	en.mu.Unlock()
 
-	epssMap, err := en.epssClient.FetchScores(ctx, cves)
-	if err != nil {
-		return nil, err
-	}
+	// 2. Attempt EPSS lookup (fail-soft)
+	epssMap, epssErr := en.epssClient.FetchScores(ctx, cves)
 
 	en.mu.RLock()
 	defer en.mu.RUnlock()
 
-	result := make(map[string]ThreatData, len(cves))
+	// 3. Assemble results without hard erroring
+	now := time.Now().UTC()
 	for _, cve := range cves {
-		data := epssMap[cve]
-		data.CVE = cve
+		var td ThreatData
 
-		if record, exists := en.kevLookup[cve]; exists {
-			data.InKEV = true
-			data.KEVDetails = &record
+		if epssMap != nil {
+			if val, ok := epssMap[cve]; ok {
+				td = val
+			}
 		}
-		result[cve] = data
+
+		td.CVE = cve
+		td.EnrichedAt = now
+
+		var warnings []string
+		if kevErr != nil {
+			warnings = append(warnings, fmt.Sprintf("KEV lookup skipped: %v", kevErr))
+		} else if en.kevLookup != nil {
+			if record, exists := en.kevLookup[cve]; exists {
+				td.InKEV = true
+				td.KEVDetails = &record
+			}
+		}
+
+		if epssErr != nil {
+			warnings = append(warnings, fmt.Sprintf("EPSS lookup skipped: %v", epssErr))
+		}
+
+		if len(warnings) > 0 {
+			td.Warning = strings.Join(warnings, "; ")
+			// If both external feeds failed, mark as unenriched
+			if kevErr != nil && epssErr != nil {
+				td.Enriched = false
+			} else {
+				td.Enriched = true
+			}
+		} else {
+			td.Enriched = true
+		}
+
+		result[cve] = td
 	}
 
 	return result, nil
