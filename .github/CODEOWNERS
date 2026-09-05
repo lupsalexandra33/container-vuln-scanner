@@ -7,7 +7,9 @@
 /pkg/trust/         @lupsalexandra33
 /pkg/policy/        @lupsalexandra33
 
-/pkg/scanner/       @RazvanMasgras
+/pkg/scanner/scanner.go    @lupsalexandra33
+/pkg/scanner/exec.go       @RazvanMasgras
+/pkg/scanner/adapters/     @RazvanMasgras
 /pkg/orchestrator/  @RazvanMasgras
 /pkg/sbom/          @RazvanMasgras
 /deploy/            @RazvanMasgras
