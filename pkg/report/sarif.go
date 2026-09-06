@@ -113,7 +113,6 @@ func buildSARIF(rep Report) sarifDocument {
 			level = "note"
 		}
 
-		// Message showing scanners, fix state, and confidence
 		inputs := f.ConfidenceInputs()
 		reporters := strings.Join(f.ReportedBy(), ", ")
 		msg := fmt.Sprintf("%s (%s) detected in package %s@%s by [%s] (confidence: %.2f, %d/%d scanners agreed). FixState: %s.",

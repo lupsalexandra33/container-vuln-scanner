@@ -57,7 +57,7 @@ func sampleReport() Report {
 				Description:      "SSL handshake vulnerability",
 				FixState:         model.FixWontFix,
 				Confidence:       0.5,
-				Enrichment:       nil,
+				Enrichment:       nil, // un-enriched / unreachable
 				Verdicts: []model.ScannerVerdict{
 					{Scanner: "trivy", Participation: model.Reported, Weight: 1.0},
 					{Scanner: "grype", Participation: model.RanAndMissed, Weight: 1.0, Reason: "differing version check"},

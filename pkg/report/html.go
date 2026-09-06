@@ -91,6 +91,7 @@ const htmlTmpl = `<!DOCTYPE html>
               </div>
             {{end}}
           </td>
+          <td>
             {{$sev := toLower (printf "%s" .Severity)}}
             {{if eq $sev "critical"}}<span class="badge-critical">{{.Severity}}</span>
             {{else if eq $sev "high"}}<span class="badge-high">{{.Severity}}</span>
