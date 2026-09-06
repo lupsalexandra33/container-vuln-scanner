@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // ExportJSON writes a formatted JSON report to the provided writer.
@@ -21,7 +22,6 @@ func ExportSARIF(w io.Writer, rep Report) error {
 	return enc.Encode(sarifLog)
 }
 
-// Internal SARIF 2.1.0 schema models
 type sarifDocument struct {
 	Schema  string     `json:"$schema"`
 	Version string     `json:"version"`
@@ -80,40 +80,59 @@ func buildSARIF(rep Report) sarifDocument {
 	var results []sarifResult
 
 	for _, f := range rep.Findings {
-		if _, exists := rulesMap[f.ID]; !exists {
+		id := f.Vulnerability.PreferredID().ID
+		if id == "" {
+			id = f.Vulnerability.Primary.ID
+		}
+
+		pkgName := f.Package.Name
+		if pkgName == "" {
+			pkgName = f.Package.Canonical()
+		}
+
+		if _, exists := rulesMap[id]; !exists {
 			rule := sarifRule{
-				ID: f.ID,
+				ID: id,
 				ShortDescription: sarifMultiformatText{
-					Text: fmt.Sprintf("%s in %s %s", f.ID, f.Package, f.Version),
+					Text: fmt.Sprintf("%s in %s %s", id, pkgName, f.InstalledVersion),
 				},
 				FullDescription: sarifMultiformatText{
 					Text: f.Description,
 				},
-				HelpURI: fmt.Sprintf("https://nvd.nist.gov/vuln/detail/%s", f.ID),
+				HelpURI: fmt.Sprintf("https://nvd.nist.gov/vuln/detail/%s", id),
 			}
-			rulesMap[f.ID] = rule
+			rulesMap[id] = rule
 			rules = append(rules, rule)
 		}
 
-		// Map severity to SARIF level
 		level := "warning"
-		switch f.Severity {
-		case "CRITICAL", "HIGH":
+		switch strings.ToLower(string(f.Severity)) {
+		case "critical", "high":
 			level = "error"
-		case "LOW":
+		case "low", "negligible":
 			level = "note"
 		}
 
-		msg := fmt.Sprintf("%s (%s) detected in package %s@%s.", f.ID, f.Severity, f.Package, f.Version)
-		if f.InKEV {
-			msg += " [ALERT: Known Exploited Vulnerability in CISA KEV]"
+		// Message showing scanners, fix state, and confidence
+		inputs := f.ConfidenceInputs()
+		reporters := strings.Join(f.ReportedBy(), ", ")
+		msg := fmt.Sprintf("%s (%s) detected in package %s@%s by [%s] (confidence: %.2f, %d/%d scanners agreed). FixState: %s.",
+			id, f.Severity, pkgName, f.InstalledVersion, reporters, f.Confidence, inputs.AgreeingCount, inputs.ParticipatingCount, f.FixState)
+
+		if f.IsActivelyExploited() {
+			msg += " [ALERT: Known Exploited Vulnerability in CISA KEV"
+			if f.Enrichment.KEVDueDate != "" {
+				msg += fmt.Sprintf(", due: %s", f.Enrichment.KEVDueDate)
+			}
+			msg += "]"
 		}
-		if f.EPSSScore > 0 {
-			msg += fmt.Sprintf(" [EPSS: %.2f%%]", f.EPSSScore*100)
+
+		if f.Enrichment != nil && f.Enrichment.EPSSScore > 0 {
+			msg += fmt.Sprintf(" [EPSS: %.2f%%]", f.Enrichment.EPSSScore*100)
 		}
 
 		results = append(results, sarifResult{
-			RuleID:  f.ID,
+			RuleID:  id,
 			Level:   level,
 			Message: sarifMultiformatText{Text: msg},
 			Locations: []sarifLocation{

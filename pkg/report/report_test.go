@@ -6,34 +6,62 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
 )
 
 func sampleReport() Report {
 	rep := Report{
 		ToolName:    "container-vuln-scanner",
 		ToolVersion: "v0.1.0",
-		Target:      "test-image:latest",
+		Target:      "debian:11",
 		GeneratedAt: time.Now().UTC(),
-		Findings: []Finding{
+		Findings: []model.ConsolidatedFinding{
 			{
-				ID:             "CVE-2023-45853",
-				Package:        "zlib",
-				Version:        "1.2.11",
-				Severity:       "CRITICAL",
-				Description:    "MiniZip buffer overflow",
-				FixVersion:     "1.2.12",
-				InKEV:          true,
-				EPSSScore:      0.0015,
-				EPSSPercentile: 0.48,
+				Vulnerability: model.VulnRef{
+					Primary: model.VulnID{ID: "CVE-2023-45853"},
+				},
+				Package: model.PURL{
+					Type:    "deb",
+					Name:    "zlib",
+					Version: "1.2.11",
+				},
+				InstalledVersion: "1.2.11",
+				Severity:         model.SeverityCritical,
+				Description:      "MiniZip buffer overflow",
+				FixState:         model.FixAvailable,
+				FixedVersions:    []string{"1.2.12"},
+				Confidence:       1.0,
+				Enrichment: &model.Enrichment{
+					InKEV:          true,
+					EPSSScore:      0.0015,
+					EPSSPercentile: 0.48,
+					KEVDueDate:     "2023-11-22",
+				},
+				Verdicts: []model.ScannerVerdict{
+					{Scanner: "trivy", Participation: model.Reported, Weight: 1.0},
+					{Scanner: "grype", Participation: model.Reported, Weight: 1.0},
+				},
 			},
 			{
-				ID:          "CVE-2024-0001",
-				Package:     "openssl",
-				Version:     "1.1.1",
-				Severity:    "HIGH",
-				Description: "SSL handshake flaw",
-				InKEV:       false,
-				EPSSScore:   0.85,
+				Vulnerability: model.VulnRef{
+					Primary: model.VulnID{ID: "CVE-2024-0001"},
+				},
+				Package: model.PURL{
+					Type:    "deb",
+					Name:    "openssl",
+					Version: "1.1.1",
+				},
+				InstalledVersion: "1.1.1",
+				Severity:         model.SeverityHigh,
+				Description:      "SSL handshake vulnerability",
+				FixState:         model.FixWontFix,
+				Confidence:       0.5,
+				Enrichment:       nil,
+				Verdicts: []model.ScannerVerdict{
+					{Scanner: "trivy", Participation: model.Reported, Weight: 1.0},
+					{Scanner: "grype", Participation: model.RanAndMissed, Weight: 1.0, Reason: "differing version check"},
+				},
 			},
 		},
 	}
@@ -52,8 +80,11 @@ func TestExportJSON(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
 		t.Fatalf("unmarshaling generated JSON: %v", err)
 	}
-	if parsed.Summary.Total != 2 || parsed.Summary.Critical != 1 || parsed.Summary.InKEV != 1 {
+	if parsed.Summary.Total != 2 || parsed.Summary.Critical != 1 || parsed.Summary.FixAvailable != 1 {
 		t.Errorf("unexpected summary values: %+v", parsed.Summary)
+	}
+	if parsed.Summary.Disputed != 1 {
+		t.Errorf("expected 1 disputed finding, got %d", parsed.Summary.Disputed)
 	}
 }
 
@@ -93,5 +124,11 @@ func TestExportHTML(t *testing.T) {
 	}
 	if !strings.Contains(htmlStr, "ACTIVE EXPLOIT") {
 		t.Errorf("expected KEV tag in HTML table")
+	}
+	if !strings.Contains(htmlStr, "wont_fix") && !strings.Contains(htmlStr, "Fixed in") {
+		t.Errorf("expected FixState representations in HTML")
+	}
+	if !strings.Contains(htmlStr, "Disputed") {
+		t.Errorf("expected Disputed badge in HTML")
 	}
 }
