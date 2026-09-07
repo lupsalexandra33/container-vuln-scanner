@@ -43,7 +43,7 @@ func WithScannerTimeout(t time.Duration) Option {
 func New(scanners []scanner.Scanner, opts ...Option) *Orchestrator {
 	o := &Orchestrator{
 		scanners:    scanners,
-		workerCount: 4,               // Default bounded worker count
+		workerCount: 4,                // Default bounded worker count
 		timeout:     10 * time.Minute, // Default per-scanner timeout
 	}
 	for _, opt := range opts {
@@ -56,7 +56,7 @@ func New(scanners []scanner.Scanner, opts ...Option) *Orchestrator {
 type RunOptions struct {
 	// Scanners is an explicit list of scanner names to run. If empty, all capable scanners run.
 	Scanners []string
-	
+
 	// Classes restricts the scan to specific finding classes (e.g. only vulnerabilities).
 	// If empty, all classes are scanned.
 	Classes []model.FindingClass
@@ -93,7 +93,7 @@ func (o *Orchestrator) Run(ctx context.Context, target model.Target, opts RunOpt
 
 		// Filter by capabilities
 		caps := s.Capabilities()
-		
+
 		if opts.Offline && caps.RequiresNetwork {
 			continue
 		}
