@@ -21,8 +21,8 @@ type mockScanner struct {
 	scanResult   model.RawResult
 }
 
-func (m *mockScanner) Name() string { return m.name }
-func (m *mockScanner) Capabilities() scanner.Capabilities { return m.caps }
+func (m *mockScanner) Name() string                        { return m.name }
+func (m *mockScanner) Capabilities() scanner.Capabilities  { return m.caps }
 func (m *mockScanner) Available(ctx context.Context) error { return m.availableErr }
 func (m *mockScanner) Version(ctx context.Context) (model.ToolVersion, error) {
 	if m.versionDelay > 0 {
@@ -55,8 +55,8 @@ func TestOrchestrator_Run(t *testing.T) {
 			availableErr: errors.New("not installed"),
 		},
 		&mockScanner{
-			name:       "scanner-c",
-			scanErr:    errors.New("scan failed randomly"),
+			name:    "scanner-c",
+			scanErr: errors.New("scan failed randomly"),
 		},
 		&mockScanner{
 			name:      "scanner-d",
@@ -142,7 +142,7 @@ func TestOrchestrator_Timeout(t *testing.T) {
 
 	// Set timeout much shorter than the scan delay
 	orc := New(scanners, WithScannerTimeout(10*time.Millisecond))
-	
+
 	session, err := orc.Run(context.Background(), model.Target{}, RunOptions{})
 	if err != nil {
 		t.Fatal(err)
