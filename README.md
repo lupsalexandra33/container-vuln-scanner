@@ -55,7 +55,7 @@ The full analysis, and the design decisions each measurement supports, is in
         │
         ├─  policy evaluation               pass / warn / fail
         │
-        └─  reporting                       JSON · terminal · SARIF
+        └─  reporting                       JSON · terminal · SARIF 2.1.0 · HTML
 ```
 
 The output is not a list of CVEs but a list of CVEs with context: how confident
@@ -96,7 +96,7 @@ Active development, targeting September 2026.
 - [ ] Correlation and confidence scoring
 - [ ] Conflict resolution
 - [x] Enrichment · CVSS, EPSS, CISA KEV
-- [ ] Reporting
+- [x] Reporting · JSON, HTML, SARIF 2.1.0
 - [ ] Policy engine
 - [ ] CLI
 
