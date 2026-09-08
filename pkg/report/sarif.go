@@ -126,7 +126,7 @@ func buildSARIF(rep Report) sarifDocument {
 			msg += "]"
 		}
 
-		if f.Enrichment != nil && f.Enrichment.EPSSScore > 0 {
+		if f.Enrichment != nil {
 			msg += fmt.Sprintf(" [EPSS: %.2f%%]", f.Enrichment.EPSSScore*100)
 		}
 

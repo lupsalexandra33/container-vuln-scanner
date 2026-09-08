@@ -118,7 +118,7 @@ const htmlTmpl = `<!DOCTYPE html>
             {{end}}
           </td>
           <td>
-            {{if and .Enrichment (gt .Enrichment.EPSSScore 0.0)}}
+            {{if .Enrichment}}
               {{printf "%.2f%%" (mulf .Enrichment.EPSSScore 100.0)}}
             {{else if .Enrichment}}
               <span class="tag-none">0.00%</span>
