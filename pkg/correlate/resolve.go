@@ -39,13 +39,26 @@ var distroForEcosystem = map[string]string{
 	"rpm": "redhat",
 }
 
-// genericSources describe the upstream software rather than any particular
-// package build. They are used as a fallback, never as an authority over a
-// distribution's own assessment.
-var genericSources = map[string]bool{
-	"nvd":  true,
-	"ghsa": true,
+// distroSources are the distribution security trackers whose ratings describe a
+// package as that distribution built it, backports included.
+//
+// This is an allowlist rather than a list of generic sources to exclude. A
+// source we have not seen — a new scanner reporting from osv or a commercial
+// feed — is treated as generic, which at worst declines to count it toward
+// distribution consensus. The inverse would silently promote it to an authority
+// it has not earned.
+//
+// Seeded from the sources the debian:11 fixture actually produces.
+var distroSources = map[string]bool{
+	"debian": true, "ubuntu": true, "alpine": true,
+	"redhat": true, "rocky": true, "alma": true, "oracle-oval": true,
+	"amazon": true, "azure": true, "photon": true, "cbl-mariner": true,
+	"suse": true, "opensuse": true, "wolfi": true, "chainguard": true,
+	"bottlerocket": true, "rootio": true,
 }
+
+// isDistroSource reports whether a source is a distribution security tracker.
+func isDistroSource(source string) bool { return distroSources[source] }
 
 // ResolveSeverity picks the severity to present for a consolidated finding.
 //
@@ -117,7 +130,7 @@ func distroConsensus(ratings map[string]model.Severity) (model.Severity, int, bo
 	var agreed model.Severity
 	count := 0
 	for source, sev := range ratings {
-		if genericSources[source] {
+		if !isDistroSource(source) {
 			continue
 		}
 		if count == 0 {
@@ -133,12 +146,12 @@ func distroConsensus(ratings map[string]model.Severity) (model.Severity, int, bo
 	return agreed, count, true
 }
 
-// mostSevereDistro returns the highest rating among non-generic sources.
+// mostSevereDistro returns the highest rating among distribution sources.
 func mostSevereDistro(ratings map[string]model.Severity) (model.Severity, bool) {
 	worst := model.SeverityUnknown
 	found := false
 	for source, sev := range ratings {
-		if genericSources[source] {
+		if !isDistroSource(source) {
 			continue
 		}
 		found = true
@@ -190,15 +203,28 @@ func ResolveFixState(findings []model.Finding) (model.FixState, []string, *model
 	states := map[string]model.FixState{}
 	var versions []string
 
+	// Collect every fixed version any scanner named, not just the first.
+	// Scanners can disagree on the version that fixes a finding while agreeing
+	// that one exists — Trivy saying 1.2.3 and Grype saying 1.2.4 both produce
+	// FixAvailable, so the disagreement is invisible in the state alone.
+	// Keeping only the first would silently discard a real fixed version.
+	seen := map[string]bool{}
 	for _, f := range findings {
 		if f.FixState == model.FixUnknown {
 			continue
 		}
 		states[f.Scanner] = f.FixState
-		if f.HasFix() && len(versions) == 0 {
-			versions = append(versions, f.FixedVersions...)
+		if !f.HasFix() {
+			continue
+		}
+		for _, v := range f.FixedVersions {
+			if !seen[v] {
+				seen[v] = true
+				versions = append(versions, v)
+			}
 		}
 	}
+	sort.Strings(versions)
 
 	if len(states) == 0 {
 		return model.FixUnknown, nil, nil

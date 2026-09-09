@@ -134,6 +134,29 @@ func TestGenericSourcesOnly(t *testing.T) {
 	t.Logf("resolved to %s: %s", conflict.Resolved, conflict.Reason)
 }
 
+// TestUnknownSourceIsTreatedAsGeneric checks the allowlist behaviour. A source
+// we have not seen must not be promoted to a distribution authority it has not
+// earned — at worst it declines to count toward consensus.
+func TestUnknownSourceIsTreatedAsGeneric(t *testing.T) {
+	sev, conflict := ResolveSeverity(
+		[]model.Finding{rated("trivy", map[string]model.Severity{
+			"ubuntu":        model.SeverityLow,
+			"redhat":        model.SeverityLow,
+			"some-new-feed": model.SeverityCritical,
+		})},
+		"deb",
+	)
+
+	if sev != model.SeverityLow {
+		t.Errorf("severity = %q, want low — two known distributions agree and the "+
+			"unrecognised source should not break their consensus", sev)
+	}
+	if conflict == nil {
+		t.Fatal("expected a recorded conflict")
+	}
+	t.Logf("resolved to %s: %s", conflict.Resolved, conflict.Reason)
+}
+
 func TestResolveSeverityAcrossScanners(t *testing.T) {
 	// Two scanners quoting the same source at different snapshot times. Keeping
 	// the more severe reading means a disagreement is never resolved by
@@ -153,10 +176,11 @@ func TestResolveSeverityAcrossScanners(t *testing.T) {
 
 func TestResolveFixStatePrefersActionable(t *testing.T) {
 	tests := []struct {
-		name    string
-		in      []model.Finding
-		want    model.FixState
-		wantVer bool
+		name         string
+		in           []model.Finding
+		want         model.FixState
+		wantVer      bool
+		wantVersions []string
 	}{
 		{
 			name: "a named fix outranks no fix",
@@ -166,6 +190,30 @@ func TestResolveFixStatePrefersActionable(t *testing.T) {
 			},
 			want:    model.FixAvailable,
 			wantVer: true,
+		},
+		{
+			// Scanners can name different fixed versions while agreeing a fix
+			// exists. Both report FixAvailable, so the disagreement is invisible
+			// in the state alone — keeping only the first would silently discard
+			// a real fixed version.
+			name: "different fixed versions are all kept",
+			in: []model.Finding{
+				{Scanner: "trivy", FixState: model.FixAvailable, FixedVersions: []string{"1.2.4"}},
+				{Scanner: "grype", FixState: model.FixAvailable, FixedVersions: []string{"1.2.3"}},
+			},
+			want:         model.FixAvailable,
+			wantVer:      true,
+			wantVersions: []string{"1.2.3", "1.2.4"},
+		},
+		{
+			name: "duplicate versions are collapsed",
+			in: []model.Finding{
+				{Scanner: "trivy", FixState: model.FixAvailable, FixedVersions: []string{"1.2.3"}},
+				{Scanner: "grype", FixState: model.FixAvailable, FixedVersions: []string{"1.2.3"}},
+			},
+			want:         model.FixAvailable,
+			wantVer:      true,
+			wantVersions: []string{"1.2.3"},
 		},
 		{
 			name: "not affected closes the finding",
@@ -198,11 +246,22 @@ func TestResolveFixStatePrefersActionable(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			state, versions, conflict := ResolveFixState(tt.in)
+
 			if state != tt.want {
 				t.Errorf("fix state = %q, want %q", state, tt.want)
 			}
 			if tt.wantVer && len(versions) == 0 {
 				t.Error("expected a fixed version to be carried through")
+			}
+			if tt.wantVersions != nil {
+				if len(versions) != len(tt.wantVersions) {
+					t.Fatalf("versions = %v, want %v", versions, tt.wantVersions)
+				}
+				for i, v := range tt.wantVersions {
+					if versions[i] != v {
+						t.Errorf("versions[%d] = %q, want %q (order must be stable)", i, versions[i], v)
+					}
+				}
 			}
 			if tt.name == "agreement produces no conflict" && conflict != nil {
 				t.Error("agreement should not produce a conflict record")
