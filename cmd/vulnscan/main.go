@@ -208,7 +208,7 @@ Flags:`)
 	var renderErr error
 	switch strings.ToLower(opts.outFormat) {
 	case "tui":
-	renderErr = report.RenderTUI(filtered, opts.scanner, opts.filePath)
+		renderErr = report.RenderTUI(filtered, opts.scanner, opts.filePath)
 	case "web", "ui":
 		renderErr = report.ServeDashboard(filtered, opts.scanner, opts.filePath)
 	case "json":
