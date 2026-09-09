@@ -33,7 +33,7 @@ func main() {
 		fmt.Printf("vulnscan %s (commit: %s, built: %s)\n", version, commit, date)
 
 	case "normalize", "inspect":
-		runNormalize(os.Args[2:])
+		os.Exit(runNormalize(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 
 	case "help", "-h", "--help":
 		printRootUsage(os.Stdout)
@@ -71,21 +71,21 @@ type normalizeOptions struct {
 	outputFile  string
 }
 
-func runNormalize(args []string) {
+func runNormalize(args []string, inReader io.Reader, outWriter, errWriter io.Writer) int {
 	fs := flag.NewFlagSet("normalize", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(errWriter)
 
 	opts := normalizeOptions{}
-	fs.StringVar(&opts.filePath, "file", "", "Path to raw scanner output file (required)")
-	fs.StringVar(&opts.scanner, "scanner", "", "Scanner engine: trivy, grype (required)")
-	fs.StringVar(&opts.format, "format", "", "Input format: trivy-json, grype-json (required)")
+	fs.StringVar(&opts.filePath, "file", "", "Path to raw scanner output file or '-' for stdin (required)")
+	fs.StringVar(&opts.scanner, "scanner", "", "Scanner engine: trivy, grype (auto-detected if omitted)")
+	fs.StringVar(&opts.format, "format", "", "Input format: trivy-json, grype-json (auto-detected if omitted)")
 	fs.StringVar(&opts.outFormat, "out", "table", "Output display format: table, json, markdown")
 	fs.StringVar(&opts.minSeverity, "min-severity", "UNKNOWN", "Minimum severity to display (UNKNOWN, LOW, MEDIUM, HIGH, CRITICAL)")
 	fs.StringVar(&opts.failOn, "fail-on", "", "Exit with code 1 if any finding meets/exceeds severity (e.g. HIGH, CRITICAL)")
 	fs.StringVar(&opts.outputFile, "o", "", "Write output to file instead of stdout")
 
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, `Usage: vulnscan normalize -file <path> -scanner <trivy|grype> -format <format> [flags]
+		fmt.Fprintln(errWriter, `Usage: vulnscan normalize -file <path> [flags]
 
 Parses raw scanner reports into standard normalized vulnerability findings.
 
@@ -95,21 +95,38 @@ Flags:`)
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
-			os.Exit(0)
+			return 0
 		}
-		os.Exit(2)
+		return 2
 	}
 
-	if opts.filePath == "" || opts.scanner == "" || opts.format == "" {
-		fmt.Fprintln(os.Stderr, "error: -file, -scanner, and -format flags are all required")
+	if opts.filePath == "" {
+		fmt.Fprintln(errWriter, "error: -file flag is required")
 		fs.Usage()
-		os.Exit(2)
+		return 2
+	}
+
+	// Auto-detect scanner and format from filename if omitted
+	if opts.scanner == "" || opts.format == "" {
+		detectedScanner, detectedFormat := inferScanner(opts.filePath)
+		if opts.scanner == "" {
+			opts.scanner = detectedScanner
+		}
+		if opts.format == "" {
+			opts.format = detectedFormat
+		}
+	}
+
+	if opts.scanner == "" || opts.format == "" {
+		fmt.Fprintln(errWriter, "error: -scanner and -format must be specified when input cannot be inferred")
+		fs.Usage()
+		return 2
 	}
 
 	minSev, err := parseSeverity(opts.minSeverity)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: -min-severity: %v\n", err)
-		os.Exit(2)
+		fmt.Fprintf(errWriter, "error: -min-severity: %v\n", err)
+		return 2
 	}
 
 	var failThreshold model.Severity
@@ -117,19 +134,24 @@ Flags:`)
 	if failEnabled {
 		failThreshold, err = parseSeverity(opts.failOn)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: -fail-on: %v\n", err)
-			os.Exit(2)
+			fmt.Fprintf(errWriter, "error: -fail-on: %v\n", err)
+			return 2
 		}
 	}
 
-	// 1. Read payload.
-	data, err := os.ReadFile(opts.filePath)
+	// 1. Read payload from file or stdin
+	var data []byte
+	if opts.filePath == "-" {
+		data, err = io.ReadAll(inReader)
+	} else {
+		data, err = os.ReadFile(opts.filePath)
+	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading file: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(errWriter, "error reading input: %v\n", err)
+		return 1
 	}
 
-	// 2. Normalize.
+	// 2. Normalize
 	registry := normalize.NewRegistry()
 	findings, err := registry.Normalize(model.RawResult{
 		Scanner: opts.scanner,
@@ -137,11 +159,11 @@ Flags:`)
 		Payload: data,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error normalizing report: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(errWriter, "error normalizing report: %v\n", err)
+		return 1
 	}
 
-	// 3. Filter findings.
+	// 3. Filter findings
 	filtered := make([]model.Finding, 0, len(findings))
 	for _, f := range findings {
 		if meetsThreshold(f.PrimarySeverity(), minSev) {
@@ -149,38 +171,38 @@ Flags:`)
 		}
 	}
 
-	// 4. Output destination.
-	outWriter := io.Writer(os.Stdout)
+	// 4. Output destination
+	dest := outWriter
 	if opts.outputFile != "" {
 		file, err := os.Create(opts.outputFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error creating output file: %v\n", err)
-			os.Exit(1)
+			fmt.Fprintf(errWriter, "error creating output file: %v\n", err)
+			return 1
 		}
 		defer file.Close()
-		outWriter = file
+		dest = file
 	}
 
-	// 5. Render.
+	// 5. Render
 	var renderErr error
 	switch strings.ToLower(opts.outFormat) {
 	case "json":
-		renderErr = renderJSON(outWriter, filtered)
+		renderErr = renderJSON(dest, filtered)
 	case "markdown", "md":
-		renderErr = renderMarkdown(outWriter, filtered, opts.scanner, opts.filePath)
+		renderErr = renderMarkdown(dest, filtered, opts.scanner, opts.filePath)
 	case "table":
-		renderErr = renderTable(outWriter, filtered, opts.scanner, opts.filePath)
+		renderErr = renderTable(dest, filtered, opts.scanner, opts.filePath)
 	default:
-		fmt.Fprintf(os.Stderr, "error: unsupported format %q (allowed: table, json, markdown)\n", opts.outFormat)
-		os.Exit(2)
+		fmt.Fprintf(errWriter, "error: unsupported format %q (allowed: table, json, markdown)\n", opts.outFormat)
+		return 2
 	}
 
 	if renderErr != nil {
-		fmt.Fprintf(os.Stderr, "error rendering output: %v\n", renderErr)
-		os.Exit(1)
+		fmt.Fprintf(errWriter, "error rendering output: %v\n", renderErr)
+		return 1
 	}
 
-	// 6. Threshold / CI enforcement.
+	// 6. Threshold / CI enforcement
 	if failEnabled {
 		violations := 0
 		for _, f := range filtered {
@@ -189,21 +211,30 @@ Flags:`)
 			}
 		}
 		if violations > 0 {
-			fmt.Fprintf(os.Stderr, "\n[FAIL] Found %d finding(s) meeting or exceeding %s\n", violations, strings.ToUpper(opts.failOn))
-			os.Exit(1)
+			fmt.Fprintf(errWriter, "\n[FAIL] Found %d finding(s) meeting or exceeding %s\n", violations, strings.ToUpper(opts.failOn))
+			return 1
 		}
+	}
+
+	return 0
+}
+
+func inferScanner(path string) (scanner, format string) {
+	lower := strings.ToLower(path)
+	switch {
+	case strings.Contains(lower, "trivy"):
+		return "trivy", "trivy-json"
+	case strings.Contains(lower, "grype"):
+		return "grype", "grype-json"
+	default:
+		return "", ""
 	}
 }
 
-// meetsThreshold reports whether sev is at or above threshold in severity.
 func meetsThreshold(sev, threshold model.Severity) bool {
 	return sev == threshold || sev.MoreSevereThan(threshold)
 }
 
-// parseSeverity parses a severity string, rejecting anything it doesn't
-// recognize rather than silently falling back to SeverityUnknown. This
-// matters most for -fail-on: a typo that resolved to SeverityUnknown would
-// make the threshold check pass forever without the caller noticing.
 func parseSeverity(s string) (model.Severity, error) {
 	switch strings.ToUpper(strings.TrimSpace(s)) {
 	case "CRITICAL":
@@ -233,7 +264,11 @@ func renderTable(w io.Writer, findings []model.Finding, scannerName, path string
 		"SEVERITY", "VULNERABILITY", "PACKAGE", "VERSION", "FIX STATE")
 	fmt.Fprintln(w, strings.Repeat("-", 83))
 
+	var counts = map[model.Severity]int{}
 	for _, f := range findings {
+		sev := f.PrimarySeverity()
+		counts[sev]++
+
 		id := f.Vulnerability.PreferredID().ID
 		pkgName := f.PackageName
 		if len(pkgName) > 24 {
@@ -241,8 +276,19 @@ func renderTable(w io.Writer, findings []model.Finding, scannerName, path string
 		}
 
 		fmt.Fprintf(w, "%-10s %-18s %-25s %-14s %-12s\n",
-			f.PrimarySeverity(), id, pkgName, f.InstalledVersion, f.FixState)
+			sev, id, pkgName, f.InstalledVersion, f.FixState)
 	}
+
+	fmt.Fprintln(w, strings.Repeat("-", 83))
+	fmt.Fprintf(w, "Total: %d findings (%d critical, %d high, %d medium, %d low, %d unknown)\n",
+		len(findings),
+		counts[model.SeverityCritical],
+		counts[model.SeverityHigh],
+		counts[model.SeverityMedium],
+		counts[model.SeverityLow],
+		counts[model.SeverityUnknown],
+	)
+
 	return nil
 }
 
