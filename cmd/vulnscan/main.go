@@ -54,6 +54,7 @@ Usage:
 
 Commands:
   normalize    Ingest and normalize raw scanner output into standard findings
+               (alias: inspect)
   version      Print version and build metadata
   help         Show available commands and flags
 
@@ -93,6 +94,9 @@ Flags:`)
 	}
 
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			os.Exit(0)
+		}
 		os.Exit(2)
 	}
 
@@ -102,14 +106,30 @@ Flags:`)
 		os.Exit(2)
 	}
 
-	// 1. Read Payload
+	minSev, err := parseSeverity(opts.minSeverity)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: -min-severity: %v\n", err)
+		os.Exit(2)
+	}
+
+	var failThreshold model.Severity
+	failEnabled := opts.failOn != ""
+	if failEnabled {
+		failThreshold, err = parseSeverity(opts.failOn)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: -fail-on: %v\n", err)
+			os.Exit(2)
+		}
+	}
+
+	// 1. Read payload.
 	data, err := os.ReadFile(opts.filePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading file: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 2. Normalize
+	// 2. Normalize.
 	registry := normalize.NewRegistry()
 	findings, err := registry.Normalize(model.RawResult{
 		Scanner: opts.scanner,
@@ -121,18 +141,16 @@ Flags:`)
 		os.Exit(1)
 	}
 
-	// 3. Filter Findings
-	minSev := parseSeverity(opts.minSeverity)
+	// 3. Filter findings.
 	filtered := make([]model.Finding, 0, len(findings))
 	for _, f := range findings {
-		primary := f.PrimarySeverity()
-		if primary.MoreSevereThan(minSev) || primary == minSev {
+		if meetsThreshold(f.PrimarySeverity(), minSev) {
 			filtered = append(filtered, f)
 		}
 	}
 
-	// 4. Output Destination
-	var outWriter io.Writer = os.Stdout
+	// 4. Output destination.
+	outWriter := io.Writer(os.Stdout)
 	if opts.outputFile != "" {
 		file, err := os.Create(opts.outputFile)
 		if err != nil {
@@ -143,7 +161,7 @@ Flags:`)
 		outWriter = file
 	}
 
-	// 5. Render
+	// 5. Render.
 	var renderErr error
 	switch strings.ToLower(opts.outFormat) {
 	case "json":
@@ -162,13 +180,11 @@ Flags:`)
 		os.Exit(1)
 	}
 
-	// 6. Threshold / CI Enforcement
-	if opts.failOn != "" {
-		threshold := parseSeverity(opts.failOn)
+	// 6. Threshold / CI enforcement.
+	if failEnabled {
 		violations := 0
 		for _, f := range filtered {
-			primary := f.PrimarySeverity()
-			if primary.MoreSevereThan(threshold) || primary == threshold {
+			if meetsThreshold(f.PrimarySeverity(), failThreshold) {
 				violations++
 			}
 		}
@@ -179,18 +195,29 @@ Flags:`)
 	}
 }
 
-func parseSeverity(s string) model.Severity {
+// meetsThreshold reports whether sev is at or above threshold in severity.
+func meetsThreshold(sev, threshold model.Severity) bool {
+	return sev == threshold || sev.MoreSevereThan(threshold)
+}
+
+// parseSeverity parses a severity string, rejecting anything it doesn't
+// recognize rather than silently falling back to SeverityUnknown. This
+// matters most for -fail-on: a typo that resolved to SeverityUnknown would
+// make the threshold check pass forever without the caller noticing.
+func parseSeverity(s string) (model.Severity, error) {
 	switch strings.ToUpper(strings.TrimSpace(s)) {
 	case "CRITICAL":
-		return model.SeverityCritical
+		return model.SeverityCritical, nil
 	case "HIGH":
-		return model.SeverityHigh
+		return model.SeverityHigh, nil
 	case "MEDIUM":
-		return model.SeverityMedium
+		return model.SeverityMedium, nil
 	case "LOW":
-		return model.SeverityLow
+		return model.SeverityLow, nil
+	case "UNKNOWN":
+		return model.SeverityUnknown, nil
 	default:
-		return model.SeverityUnknown
+		return "", fmt.Errorf("invalid severity %q (want UNKNOWN, LOW, MEDIUM, HIGH, or CRITICAL)", s)
 	}
 }
 
@@ -204,7 +231,7 @@ func renderTable(w io.Writer, findings []model.Finding, scannerName, path string
 	fmt.Fprintf(w, "Normalized %d findings from %s (%s)\n\n", len(findings), scannerName, path)
 	fmt.Fprintf(w, "%-10s %-18s %-25s %-14s %-12s\n",
 		"SEVERITY", "VULNERABILITY", "PACKAGE", "VERSION", "FIX STATE")
-	fmt.Fprintln(w, strings.Repeat("-", 85))
+	fmt.Fprintln(w, strings.Repeat("-", 83))
 
 	for _, f := range findings {
 		id := f.Vulnerability.PreferredID().ID
