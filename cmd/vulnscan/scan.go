@@ -1,0 +1,327 @@
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/correlate"
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/normalize"
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/scanner"
+)
+
+// scanSource pairs a scanner name with the format its output is in.
+type scanSource struct {
+	scanner string
+	format  string
+	path    string
+}
+
+// knownFormats maps a scanner name to the normalizer format it produces.
+var knownFormats = map[string]string{
+	"trivy": "trivy-json",
+	"grype": "grype-json",
+	"osv":   "osv-json",
+}
+
+// capabilitiesFor returns what a scanner declares it can detect.
+//
+// These mirror the adapters in pkg/scanner/adapters. When the orchestrator
+// lands, capabilities come from the live Scanner instances instead — this is
+// the stand-in for reading recorded output, where no adapter is instantiated.
+func capabilitiesFor(name string) scanner.Capabilities {
+	base := []string{"deb", "apk", "npm", "pypi", "gem", "cargo"}
+	caps := scanner.Capabilities{
+		Classes:     []model.FindingClass{model.ClassVulnerability},
+		Ecosystems:  base,
+		AcceptsSBOM: true,
+	}
+	if name == "grype" {
+		// Grype catalogues compiled binaries; Trivy does not. This is the
+		// difference that lets correlation tell a scanner that missed a finding
+		// from one that could not have seen it.
+		caps.Ecosystems = append(base, "binary")
+	}
+	return caps
+}
+
+func runScan(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	var (
+		dir     = fs.String("from", "", "directory of recorded scanner output to correlate")
+		format  = fs.String("out", "table", "output format: table, json")
+		showAll = fs.Bool("all", false, "include findings only one scanner reported")
+		minConf = fs.Float64("min-confidence", 0, "hide findings below this confidence (0 to 1)")
+	)
+
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: vulnscan scan --from <directory> [flags]")
+		fmt.Fprintln(stderr, "\nCorrelates recorded output from several scanners for one image.")
+		fmt.Fprintln(stderr, "\nFlags:")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *dir == "" {
+		fs.Usage()
+		return 2
+	}
+
+	sources, err := discoverSources(*dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if len(sources) == 0 {
+		fmt.Fprintf(stderr, "error: no recognised scanner output in %s\n", *dir)
+		fmt.Fprintln(stderr, "expected files named after the scanner, e.g. trivy.json, grype.json")
+		return 2
+	}
+
+	registry := normalize.NewRegistry()
+
+	var (
+		findings     []model.Finding
+		participants []correlate.Participant
+	)
+
+	for _, src := range sources {
+		payload, err := os.ReadFile(src.path)
+		if err != nil {
+			fmt.Fprintf(stderr, "warning: cannot read %s: %v\n", src.path, err)
+			// A scanner whose output we cannot read did not run, as far as
+			// correlation is concerned. Recording it as a participant that did
+			// not run keeps its silence out of the confidence denominator.
+			participants = append(participants, correlate.Participant{
+				Name:         src.scanner,
+				Capabilities: capabilitiesFor(src.scanner),
+				Ran:          false,
+			})
+			continue
+		}
+
+		got, err := registry.Normalize(model.RawResult{
+			Scanner: src.scanner,
+			Format:  src.format,
+			Payload: payload,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "warning: cannot normalise %s: %v\n", src.path, err)
+			participants = append(participants, correlate.Participant{
+				Name:         src.scanner,
+				Capabilities: capabilitiesFor(src.scanner),
+				Ran:          false,
+			})
+			continue
+		}
+
+		findings = append(findings, got...)
+		participants = append(participants, correlate.Participant{
+			Name:         src.scanner,
+			Capabilities: capabilitiesFor(src.scanner),
+			Ran:          true,
+			// A scanner that ran and produced nothing has no data for this
+			// target rather than a clean result. On alpine:3.14 Trivy returns
+			// zero because Alpine's secdb records only fixes and stops
+			// receiving them past end of life, while Grype returns 39.
+			NoData: len(got) == 0,
+		})
+	}
+
+	consolidated := correlate.Correlate(findings, participants)
+
+	switch *format {
+	case "json":
+		return writeScanJSON(stdout, stderr, consolidated)
+	case "table":
+		writeScanTable(stdout, consolidated, participants, len(findings), *showAll, *minConf)
+		return 0
+	default:
+		fmt.Fprintf(stderr, "error: unknown output format %q\n", *format)
+		return 2
+	}
+}
+
+// discoverSources finds recorded scanner output in a directory, identifying the
+// scanner from the filename.
+func discoverSources(dir string) ([]scanSource, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var sources []scanSource
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := strings.ToLower(e.Name())
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		stem := strings.TrimSuffix(name, ".json")
+		format, known := knownFormats[stem]
+		if !known {
+			continue // sbom.json and anything else we do not normalise
+		}
+		sources = append(sources, scanSource{
+			scanner: stem,
+			format:  format,
+			path:    filepath.Join(dir, e.Name()),
+		})
+	}
+
+	// Stable order so the participant list, and therefore the verdict order on
+	// every finding, does not depend on filesystem iteration order.
+	sort.Slice(sources, func(i, j int) bool { return sources[i].scanner < sources[j].scanner })
+	return sources, nil
+}
+
+func writeScanTable(
+	w io.Writer,
+	findings []model.ConsolidatedFinding,
+	participants []correlate.Participant,
+	rawCount int,
+	showAll bool,
+	minConfidence float64,
+) {
+	names := make([]string, 0, len(participants))
+	for _, p := range participants {
+		label := p.Name
+		if !p.Ran {
+			label += " (did not run)"
+		} else if p.NoData {
+			label += " (no data)"
+		}
+		names = append(names, label)
+	}
+	fmt.Fprintf(w, "Scanners: %s\n", strings.Join(names, ", "))
+	fmt.Fprintf(w, "%d raw findings correlated into %d\n\n", rawCount, len(findings))
+
+	shown := findings
+	if !showAll || minConfidence > 0 {
+		shown = shown[:0:0]
+		for _, f := range findings {
+			if minConfidence > 0 && f.Confidence < minConfidence {
+				continue
+			}
+			if !showAll && f.IsSingleSource() && f.IsDisputed() {
+				continue
+			}
+			shown = append(shown, f)
+		}
+	}
+
+	// Most severe first, then least confident, so the findings most worth
+	// looking at sit at the top and the contested ones are easy to spot.
+	sort.SliceStable(shown, func(i, j int) bool {
+		if shown[i].Severity.Rank() != shown[j].Severity.Rank() {
+			return shown[i].Severity.Rank() > shown[j].Severity.Rank()
+		}
+		return shown[i].Confidence < shown[j].Confidence
+	})
+
+	fmt.Fprintf(w, "%-22s %-28s %-9s %-6s %s\n",
+		"VULNERABILITY", "PACKAGE", "SEVERITY", "CONF", "SOURCES")
+	fmt.Fprintln(w, strings.Repeat("-", 100))
+
+	for _, f := range shown {
+		pkg := f.Package.Name
+		if pkg == "" {
+			pkg = "-"
+		}
+		if v := f.InstalledVersion; v != "" {
+			pkg += "@" + v
+		}
+
+		in := f.ConfidenceInputs()
+		sources := fmt.Sprintf("%d/%d %s",
+			in.AgreeingCount, in.ParticipatingCount, strings.Join(f.ReportedBy(), ","))
+		if missed := f.RanAndMissedBy(); len(missed) > 0 {
+			sources += " (missed by " + strings.Join(missed, ",") + ")"
+		}
+		if nodata := f.HadNoDataFor(); len(nodata) > 0 {
+			sources += " (no data: " + strings.Join(nodata, ",") + ")"
+		}
+
+		fmt.Fprintf(w, "%-22s %-28s %-9s %-6.2f %s\n",
+			truncate(f.Vulnerability.PreferredID().ID, 22),
+			truncate(pkg, 28),
+			f.Severity,
+			f.Confidence,
+			sources,
+		)
+
+		// A resolved conflict is a decision made on the reader's behalf. It is
+		// shown with its reason so that it can be checked rather than trusted.
+		for _, c := range f.Conflicts {
+			fmt.Fprintf(w, "%-22s   %s\n", "", correlate.ConflictSummary([]model.Conflict{c}))
+		}
+	}
+
+	writeScanSummary(w, findings, len(shown))
+}
+
+func writeScanSummary(w io.Writer, findings []model.ConsolidatedFinding, shownCount int) {
+	var agreed, disputed, singleSource, withConflicts, fixable int
+	bySeverity := map[model.Severity]int{}
+
+	for _, f := range findings {
+		bySeverity[f.Severity]++
+		if len(f.ReportedBy()) > 1 {
+			agreed++
+		}
+		if f.IsDisputed() {
+			disputed++
+		}
+		if f.IsSingleSource() {
+			singleSource++
+		}
+		if len(f.Conflicts) > 0 {
+			withConflicts++
+		}
+		if f.HasFix() {
+			fixable++
+		}
+	}
+
+	fmt.Fprintf(w, "\n%d shown of %d total\n", shownCount, len(findings))
+	fmt.Fprintf(w, "  severity      %d critical, %d high, %d medium, %d low, %d negligible, %d unknown\n",
+		bySeverity[model.SeverityCritical], bySeverity[model.SeverityHigh],
+		bySeverity[model.SeverityMedium], bySeverity[model.SeverityLow],
+		bySeverity[model.SeverityNegligible], bySeverity[model.SeverityUnknown])
+	fmt.Fprintf(w, "  agreement     %d confirmed by more than one scanner, %d disputed, %d single source\n",
+		agreed, disputed, singleSource)
+	fmt.Fprintf(w, "  conflicts     %d findings had disagreeing sources, resolved and recorded\n", withConflicts)
+	fmt.Fprintf(w, "  remediation   %d of %d have a fix available\n", fixable, len(findings))
+}
+
+func writeScanJSON(stdout, stderr io.Writer, findings []model.ConsolidatedFinding) int {
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(findings); err != nil {
+		fmt.Fprintf(stderr, "error: encoding output: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		return s[:n]
+	}
+	return s[:n-1] + "…"
+}

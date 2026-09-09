@@ -20,6 +20,8 @@ func main() {
 	switch os.Args[1] {
 	case "version":
 		fmt.Println("vulnscan", version)
+	case "scan":
+		os.Exit(runScan(os.Args[2:], os.Stdout, os.Stderr))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		os.Exit(2)
