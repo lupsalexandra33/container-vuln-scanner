@@ -240,4 +240,3 @@ func renderMarkdown(w io.Writer, findings []model.Finding, scannerName, path str
 	}
 	return nil
 }
-
