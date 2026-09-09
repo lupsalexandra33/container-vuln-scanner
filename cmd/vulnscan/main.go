@@ -77,17 +77,20 @@ func runNormalize(args []string, inReader io.Reader, outWriter, errWriter io.Wri
 
 	opts := normalizeOptions{}
 	fs.StringVar(&opts.filePath, "file", "", "Path to raw scanner output file or '-' for stdin (required)")
-	fs.StringVar(&opts.scanner, "scanner", "", "Scanner engine: trivy, grype (auto-detected if omitted)")
-	fs.StringVar(&opts.format, "format", "", "Input format: trivy-json, grype-json (auto-detected if omitted)")
+	fs.StringVar(&opts.scanner, "scanner", "", "Scanner engine: trivy, grype (auto-detected from filename if omitted; required for stdin)")
+	fs.StringVar(&opts.format, "format", "", "Input format: trivy-json, grype-json (auto-detected from filename if omitted; required for stdin)")
 	fs.StringVar(&opts.outFormat, "out", "table", "Output display format: table, json, markdown")
 	fs.StringVar(&opts.minSeverity, "min-severity", "UNKNOWN", "Minimum severity to display (UNKNOWN, LOW, MEDIUM, HIGH, CRITICAL)")
 	fs.StringVar(&opts.failOn, "fail-on", "", "Exit with code 1 if any finding meets/exceeds severity (e.g. HIGH, CRITICAL)")
 	fs.StringVar(&opts.outputFile, "o", "", "Write output to file instead of stdout")
 
 	fs.Usage = func() {
-		fmt.Fprintln(errWriter, `Usage: vulnscan normalize -file <path> [flags]
+		fmt.Fprintln(errWriter, `Usage: vulnscan normalize -file <path|-> [flags]
 
 Parses raw scanner reports into standard normalized vulnerability findings.
+Scanner and format are inferred from the filename when possible; reading from
+stdin ('-file -') requires -scanner and -format to be given explicitly, since
+there is no filename to infer from.
 
 Flags:`)
 		fs.PrintDefaults()
@@ -106,8 +109,13 @@ Flags:`)
 		return 2
 	}
 
-	// Auto-detect scanner and format from filename if omitted
-	if opts.scanner == "" || opts.format == "" {
+	fromStdin := opts.filePath == "-"
+
+	// Auto-detect scanner and format from the filename when omitted. This is
+	// only possible for a real file path — stdin has no filename to infer
+	// from, so that case is rejected explicitly below rather than silently
+	// falling through to the same generic error.
+	if !fromStdin && (opts.scanner == "" || opts.format == "") {
 		detectedScanner, detectedFormat := inferScanner(opts.filePath)
 		if opts.scanner == "" {
 			opts.scanner = detectedScanner
@@ -118,7 +126,11 @@ Flags:`)
 	}
 
 	if opts.scanner == "" || opts.format == "" {
-		fmt.Fprintln(errWriter, "error: -scanner and -format must be specified when input cannot be inferred")
+		if fromStdin {
+			fmt.Fprintln(errWriter, "error: -scanner and -format are required when reading from stdin (-file -); there is no filename to infer them from")
+		} else {
+			fmt.Fprintln(errWriter, "error: -scanner and -format must be specified when they cannot be inferred from the filename")
+		}
 		fs.Usage()
 		return 2
 	}
@@ -139,9 +151,9 @@ Flags:`)
 		}
 	}
 
-	// 1. Read payload from file or stdin
+	// 1. Read payload from file or stdin.
 	var data []byte
-	if opts.filePath == "-" {
+	if fromStdin {
 		data, err = io.ReadAll(inReader)
 	} else {
 		data, err = os.ReadFile(opts.filePath)
@@ -151,7 +163,7 @@ Flags:`)
 		return 1
 	}
 
-	// 2. Normalize
+	// 2. Normalize.
 	registry := normalize.NewRegistry()
 	findings, err := registry.Normalize(model.RawResult{
 		Scanner: opts.scanner,
@@ -163,7 +175,7 @@ Flags:`)
 		return 1
 	}
 
-	// 3. Filter findings
+	// 3. Filter findings.
 	filtered := make([]model.Finding, 0, len(findings))
 	for _, f := range findings {
 		if meetsThreshold(f.PrimarySeverity(), minSev) {
@@ -171,7 +183,7 @@ Flags:`)
 		}
 	}
 
-	// 4. Output destination
+	// 4. Output destination.
 	dest := outWriter
 	if opts.outputFile != "" {
 		file, err := os.Create(opts.outputFile)
@@ -183,7 +195,7 @@ Flags:`)
 		dest = file
 	}
 
-	// 5. Render
+	// 5. Render.
 	var renderErr error
 	switch strings.ToLower(opts.outFormat) {
 	case "json":
@@ -202,7 +214,7 @@ Flags:`)
 		return 1
 	}
 
-	// 6. Threshold / CI enforcement
+	// 6. Threshold / CI enforcement.
 	if failEnabled {
 		violations := 0
 		for _, f := range filtered {
@@ -264,7 +276,7 @@ func renderTable(w io.Writer, findings []model.Finding, scannerName, path string
 		"SEVERITY", "VULNERABILITY", "PACKAGE", "VERSION", "FIX STATE")
 	fmt.Fprintln(w, strings.Repeat("-", 83))
 
-	var counts = map[model.Severity]int{}
+	counts := map[model.Severity]int{}
 	for _, f := range findings {
 		sev := f.PrimarySeverity()
 		counts[sev]++
