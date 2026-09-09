@@ -18,6 +18,10 @@ type Target struct {
 	// only fixes, so it goes silent, while the Debian tracker keeps recording
 	// affected-with-no-fix and continues to report.
 	OSEndOfLife bool
+
+	// SBOMPath is the local file path to the generated SBOM pipeline artifact.
+	// SBOM-consuming scanners can use this instead of re-downloading the image.
+	SBOMPath string
 }
 
 // ToolVersion records a scanner and the vulnerability data it used.

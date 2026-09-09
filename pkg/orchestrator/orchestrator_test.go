@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -200,5 +201,35 @@ func TestOrchestrator_Capabilities(t *testing.T) {
 	}
 	if len(session2.Raw) != 1 || session2.Raw[0].Scanner != "local-misconfig" {
 		t.Errorf("expected only local-misconfig to run, got %+v", session2.Raw)
+	}
+}
+
+type mockSBOMGen struct {
+	data []byte
+	err  error
+}
+
+func (m *mockSBOMGen) Name() string { return "mock-sbom" }
+func (m *mockSBOMGen) Generate(ctx context.Context, t model.Target) ([]byte, error) {
+	return m.data, m.err
+}
+
+func TestOrchestrator_SBOM(t *testing.T) {
+	orc := New(nil, WithSBOMGenerator(&mockSBOMGen{data: []byte("mock sbom")}))
+	session, err := orc.Run(context.Background(), model.Target{Reference: "test-target"}, RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(session.SBOM) != "mock sbom" {
+		t.Errorf("expected session.SBOM to be 'mock sbom', got %q", session.SBOM)
+	}
+
+	if session.Target.SBOMPath == "" {
+		t.Errorf("expected Target.SBOMPath to be set, got empty")
+	}
+
+	if session.Target.SBOMPath != "" {
+		os.Remove(session.Target.SBOMPath)
 	}
 }

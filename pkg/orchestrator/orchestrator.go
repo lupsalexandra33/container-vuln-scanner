@@ -3,23 +3,33 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/sbom"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/scanner"
 )
 
 // Orchestrator manages the parallel execution of multiple scanners against a target.
 type Orchestrator struct {
-	scanners    []scanner.Scanner
-	workerCount int
-	timeout     time.Duration
+	scanners      []scanner.Scanner
+	sbomGenerator sbom.Generator
+	workerCount   int
+	timeout       time.Duration
 }
 
 // Option configures the orchestrator.
 type Option func(*Orchestrator)
+
+// WithSBOMGenerator sets the SBOM generator to be used by the orchestrator.
+func WithSBOMGenerator(gen sbom.Generator) Option {
+	return func(o *Orchestrator) {
+		o.sbomGenerator = gen
+	}
+}
 
 // WithWorkerCount sets the maximum number of scanners to run concurrently.
 func WithWorkerCount(n int) Option {
@@ -72,6 +82,24 @@ func (o *Orchestrator) Run(ctx context.Context, target model.Target, opts RunOpt
 		Target:    target,
 		StartedAt: time.Now(),
 		Config:    make(map[string]string),
+	}
+
+	// 0. Generate SBOM if a generator is configured
+	if o.sbomGenerator != nil {
+		sbomBytes, err := o.sbomGenerator.Generate(ctx, target)
+		if err == nil && len(sbomBytes) > 0 {
+			session.SBOM = sbomBytes
+
+			// Expose as pipeline artifact (temp file)
+			if tmpFile, err := os.CreateTemp("", "sbom-*.json"); err == nil {
+				_, _ = tmpFile.Write(sbomBytes)
+				tmpFile.Close()
+
+				// Expose artifact path to target so scanners can consume it
+				target.SBOMPath = tmpFile.Name()
+				session.Target = target
+			}
+		}
 	}
 
 	// 1. Scanner Selection

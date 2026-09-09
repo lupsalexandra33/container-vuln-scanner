@@ -68,8 +68,13 @@ func (g *GrypeAdapter) Available(ctx context.Context) error {
 
 func (g *GrypeAdapter) Scan(ctx context.Context, target model.Target) (model.RawResult, error) {
 	start := time.Now()
-	// Always scan image reference since Target no longer provides an SBOM path
-	res, err := scanner.RunTool(ctx, "", "grype", target.Reference, "-o", "json", "-q")
+
+	input := target.Reference
+	if target.SBOMPath != "" {
+		input = "sbom:" + target.SBOMPath
+	}
+
+	res, err := scanner.RunTool(ctx, "", "grype", input, "-o", "json", "-q")
 	if err != nil {
 		return model.RawResult{}, err
 	}

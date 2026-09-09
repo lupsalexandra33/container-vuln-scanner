@@ -63,7 +63,12 @@ func (t *TrivyAdapter) Available(ctx context.Context) error {
 
 func (t *TrivyAdapter) Scan(ctx context.Context, target model.Target) (model.RawResult, error) {
 	start := time.Now()
-	args := []string{"image", "--scanners", "vuln", "--format", "json", "--quiet", target.Reference}
+	var args []string
+	if target.SBOMPath != "" {
+		args = []string{"sbom", "--scanners", "vuln", "--format", "json", "--quiet", target.SBOMPath}
+	} else {
+		args = []string{"image", "--scanners", "vuln", "--format", "json", "--quiet", target.Reference}
+	}
 
 	res, err := scanner.RunTool(ctx, "", "trivy", args...)
 	if err != nil {
