@@ -129,7 +129,29 @@ func CorrelateWith(
 	return out
 }
 
-// CorrelateWithProvenance correlates findings and attributes findings to image layers.
+// CorrelateWithProvenance combines per-ecosystem trust weights with layer provenance.
+func CorrelateWithProvenance(
+	findings []model.Finding,
+	participants []Participant,
+	weights trust.Weights,
+	prov *layers.Provenance,
+) []model.ConsolidatedFinding {
+	out := CorrelateWith(findings, participants, weights)
+	if prov == nil {
+		return out
+	}
+
+	for i := range out {
+		var groupFindings []model.Finding
+		for _, v := range out[i].Verdicts {
+			if v.Finding != nil {
+				groupFindings = append(groupFindings, *v.Finding)
+			}
+		}
+		out[i].Origin = prov.Resolve(groupFindings)
+	}
+	return out
+}
 
 // correlationKey identifies the group a finding belongs to.
 //

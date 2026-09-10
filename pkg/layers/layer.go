@@ -78,6 +78,20 @@ func NewProvenance(configPayload []byte) (*Provenance, error) {
 	return p, nil
 }
 
+// detectBaseCut estimates the boundary between the base image and application layers.
+//
+// HEURISTIC ASSUMPTION:
+// Assumes layer 0 sets up the initial rootfs (e.g. ADD file:... in /) and that
+// the first COPY or subsequent ADD marks the start of application build instructions.
+//
+// LIMITATIONS:
+//  1. Multi-stage builds: Intermediate FROM instructions reset build context without
+//     leaving explicit markers in the squashed layer history.
+//  2. Base images with COPY: If an upstream base image itself used COPY (e.g. copying
+//     configs), the cut will trigger earlier than intended.
+//  3. Layer overwrites: If a later RUN (e.g. apt-get upgrade) overwrites an earlier
+//     package, the scanner diff ID points to the layer introducing the file, which
+//     may differ from the historical base cut.
 func (p *Provenance) detectBaseCut() {
 	p.BaseLayerCut = 0
 	for i, l := range p.Layers {
