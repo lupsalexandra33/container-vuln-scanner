@@ -5,6 +5,7 @@ import (
 
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/scanner"
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/trust"
 )
 
 // Participant is one scanner considered during a scan, and what it was able to
@@ -32,13 +33,17 @@ type Participant struct {
 	// a clean result would be worse.
 	NoData bool
 
-	// Weight is the trust weight for this scanner. Per-ecosystem weighting is
-	// [2.3]; until then a single value per scanner is used, and 0 is read as 1
-	// so that unweighted correlation degrades to plain counting.
+	// Weight is a fixed trust weight for this scanner, used when no weights
+	// table is supplied. Zero is read as 1, so unweighted correlation degrades
+	// to plain counting.
+	//
+	// Prefer CorrelateWith and a trust.Weights table. Agreement between the same
+	// two scanners ranges from 91% on a supported distribution to none on one
+	// past end of life, and a single value per scanner cannot express that.
 	Weight float64
 }
 
-// weight returns the trust weight, defaulting to 1.
+// weight returns the fixed trust weight, defaulting to 1.
 func (p Participant) weight() float64 {
 	if p.Weight <= 0 {
 		return 1
@@ -50,14 +55,9 @@ func (p Participant) weight() float64 {
 // package across scanners, and records where each participant stood.
 //
 // It is a pure function: the same findings and participants always produce the
-// same output, in the same order. Correlation is a correlation key, and a key
-// that changes between runs is not a key.
+// same output, in the same order. Correlation produces a key, and a key that
+// changes between runs is not a key.
 func Correlate(findings []model.Finding, participants []Participant) []model.ConsolidatedFinding {
-	byName := map[string]Participant{}
-	for _, p := range participants {
-		byName[p.Name] = p
-	}
-
 	// Resolve aliases first. Scanners lead with different identifier schemes
 	// for the same vulnerability, so grouping on the primary identifier alone
 	// would split one finding in two and report agreement as disagreement.
@@ -96,7 +96,34 @@ func Correlate(findings []model.Finding, participants []Participant) []model.Con
 
 	out := make([]model.ConsolidatedFinding, 0, len(groups))
 	for _, key := range order {
-		out = append(out, consolidate(groups[key].findings, groups[key].ids, participants, byName))
+		out = append(out, consolidate(groups[key].findings, groups[key].ids, participants))
+	}
+	return out
+}
+
+// CorrelateWith is Correlate with per-ecosystem trust weights.
+//
+// The weight is resolved per finding rather than per participant, because a
+// scanner's reliability is not a property of the scanner alone. Trivy reads
+// Debian's tracker directly and is authoritative on deb packages; on an Alpine
+// release past end of life the same tool reports nothing at all. Resolving at
+// consolidation time is what lets a single run apply both.
+func CorrelateWith(
+	findings []model.Finding,
+	participants []Participant,
+	weights trust.Weights,
+) []model.ConsolidatedFinding {
+	out := Correlate(findings, participants)
+
+	for i := range out {
+		ecosystem := out[i].Package.Ecosystem()
+		for j := range out[i].Verdicts {
+			out[i].Verdicts[j].Weight = weights.For(out[i].Verdicts[j].Scanner, ecosystem)
+		}
+		// Recompute now that the weights have changed. The verdicts themselves
+		// are untouched: which scanner reported what does not depend on how
+		// much any of them is trusted.
+		out[i].Confidence = confidence(out[i])
 	}
 	return out
 }
@@ -126,7 +153,6 @@ func consolidate(
 	findings []model.Finding,
 	ids []model.VulnID,
 	participants []Participant,
-	byName map[string]Participant,
 ) model.ConsolidatedFinding {
 	first := findings[0]
 
