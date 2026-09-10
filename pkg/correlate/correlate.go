@@ -3,6 +3,7 @@ package correlate
 import (
 	"sort"
 
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/layers"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/scanner"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/trust"
@@ -124,6 +125,30 @@ func CorrelateWith(
 		// are untouched: which scanner reported what does not depend on how
 		// much any of them is trusted.
 		out[i].Confidence = confidence(out[i])
+	}
+	return out
+}
+
+// CorrelateWithProvenance combines per-ecosystem trust weights with layer provenance.
+func CorrelateWithProvenance(
+	findings []model.Finding,
+	participants []Participant,
+	weights trust.Weights,
+	prov *layers.Provenance,
+) []model.ConsolidatedFinding {
+	out := CorrelateWith(findings, participants, weights)
+	if prov == nil {
+		return out
+	}
+
+	for i := range out {
+		var groupFindings []model.Finding
+		for _, v := range out[i].Verdicts {
+			if v.Finding != nil {
+				groupFindings = append(groupFindings, *v.Finding)
+			}
+		}
+		out[i].Origin = prov.Resolve(groupFindings)
 	}
 	return out
 }
@@ -287,12 +312,20 @@ func mergeText(findings []model.Finding) (title, description string, refs []stri
 	return title, description, refs
 }
 
-// originFrom takes the first location any scanner reported. Precise layer
-// attribution is [4.2]; this is the raw layer identifier the scanner supplied.
 func originFrom(findings []model.Finding) *model.Origin {
+	return originFromWithProvenance(findings, nil)
+}
+
+func originFromWithProvenance(findings []model.Finding, prov *layers.Provenance) *model.Origin {
+	if prov != nil {
+		return prov.Resolve(findings)
+	}
 	for _, f := range findings {
 		if f.Location != "" {
-			return &model.Origin{LayerDigest: f.Location}
+			return &model.Origin{
+				LayerDigest: f.Location,
+				LayerIndex:  -1,
+			}
 		}
 	}
 	return nil

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/correlate"
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/layers"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/normalize"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/scanner"
@@ -90,6 +91,17 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	// Attempt to load image layer provenance if an image config is present.
+	var prov *layers.Provenance
+	for _, configName := range []string{"config.json", "manifest.json", "image.json"} {
+		if cfgData, err := os.ReadFile(filepath.Join(*dir, configName)); err == nil {
+			if p, err := layers.NewProvenance(cfgData); err == nil {
+				prov = p
+				break
+			}
+		}
+	}
+
 	registry := normalize.NewRegistry()
 
 	var (
@@ -145,7 +157,7 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	// on none of them on one past end of life, so a single weight per scanner
 	// would encode a ranking the evidence does not support.
 	weights := trust.DefaultWeights()
-	consolidated := correlate.CorrelateWith(findings, participants, weights)
+	consolidated := correlate.CorrelateWithProvenance(findings, participants, weights, prov)
 
 	switch *format {
 	case "json":
@@ -271,6 +283,22 @@ func writeScanTable(
 			f.Confidence,
 			sources,
 		)
+
+		// Print layer origin attribution if resolved
+		if f.Origin != nil && (f.Origin.Instruction != "" || f.Origin.LayerIndex >= 0 || f.Origin.LayerDigest != "") {
+			var desc string
+			if f.Origin.LayerIndex >= 0 {
+				desc = fmt.Sprintf("layer #%d", f.Origin.LayerIndex)
+				if f.Origin.Instruction != "" {
+					desc += " (" + truncate(f.Origin.Instruction, 50) + ")"
+				}
+			} else if f.Origin.LayerDigest != "" {
+				desc = "layer " + truncate(f.Origin.LayerDigest, 22)
+			}
+			if desc != "" {
+				fmt.Fprintf(w, "%-22s   origin: %s\n", "", desc)
+			}
+		}
 
 		// A resolved conflict is a decision made on the reader's behalf. It is
 		// shown with its reason so that it can be checked rather than trusted.
