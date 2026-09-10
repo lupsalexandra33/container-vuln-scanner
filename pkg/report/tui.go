@@ -643,4 +643,3 @@ func colorSeverityPill(sev string) string {
 		return "\033[90munk \033[0m"
 	}
 }
-
