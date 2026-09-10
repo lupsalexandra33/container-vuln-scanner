@@ -33,13 +33,15 @@ func main() {
 	case "version":
 		fmt.Printf("vulnscan %s (commit: %s, built: %s)\n", version, commit, date)
 
+	case "scan":
+		os.Exit(runScan(os.Args[2:], os.Stdout, os.Stderr))
+
 	case "normalize", "inspect", "view", "tui":
 		os.Exit(runNormalize(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 
 	case "help", "-h", "--help":
 		printRootUsage(os.Stdout)
 		os.Exit(0)
-
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		printRootUsage(os.Stderr)
