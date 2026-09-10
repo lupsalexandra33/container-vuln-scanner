@@ -42,6 +42,7 @@ func main() {
 	case "help", "-h", "--help":
 		printRootUsage(os.Stdout)
 		os.Exit(0)
+
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		printRootUsage(os.Stderr)
@@ -56,8 +57,11 @@ Usage:
   vulnscan <command> [flags]
 
 Commands:
+  scan         Correlate and inspect findings across multiple scanners
   normalize    Ingest and normalize raw scanner output into standard findings
                (alias: inspect)
+  view         Open findings in interactive web dashboard
+  tui          Open findings in interactive terminal UI
   version      Print version and build metadata
   help         Show available commands and flags
 
@@ -82,7 +86,7 @@ func runNormalize(args []string, inReader io.Reader, outWriter, errWriter io.Wri
 	fs.StringVar(&opts.filePath, "file", "", "Path to raw scanner output file or '-' for stdin (required)")
 	fs.StringVar(&opts.scanner, "scanner", "", "Scanner engine: trivy, grype (auto-detected from filename if omitted; required for stdin)")
 	fs.StringVar(&opts.format, "format", "", "Input format: trivy-json, grype-json (auto-detected from filename if omitted; required for stdin)")
-	fs.StringVar(&opts.outFormat, "out", "table", "Output display format: table, json, markdown")
+	fs.StringVar(&opts.outFormat, "out", "table", "Output display format: table, json, markdown, web, tui")
 	fs.StringVar(&opts.minSeverity, "min-severity", "UNKNOWN", "Minimum severity to display (UNKNOWN, LOW, MEDIUM, HIGH, CRITICAL)")
 	fs.StringVar(&opts.failOn, "fail-on", "", "Exit with code 1 if any finding meets/exceeds severity (e.g. HIGH, CRITICAL)")
 	fs.StringVar(&opts.outputFile, "o", "", "Write output to file instead of stdout")
