@@ -14,6 +14,7 @@ import (
 
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/normalize"
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/report"
 )
 
 var (
@@ -32,7 +33,10 @@ func main() {
 	case "version":
 		fmt.Printf("vulnscan %s (commit: %s, built: %s)\n", version, commit, date)
 
-	case "normalize", "inspect":
+	case "scan":
+		os.Exit(runScan(os.Args[2:], os.Stdout, os.Stderr))
+
+	case "normalize", "inspect", "view", "tui":
 		os.Exit(runNormalize(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 
 	case "help", "-h", "--help":
@@ -53,8 +57,11 @@ Usage:
   vulnscan <command> [flags]
 
 Commands:
+  scan         Correlate and inspect findings across multiple scanners
   normalize    Ingest and normalize raw scanner output into standard findings
                (alias: inspect)
+  view         Open findings in interactive web dashboard
+  tui          Open findings in interactive terminal UI
   version      Print version and build metadata
   help         Show available commands and flags
 
@@ -79,7 +86,7 @@ func runNormalize(args []string, inReader io.Reader, outWriter, errWriter io.Wri
 	fs.StringVar(&opts.filePath, "file", "", "Path to raw scanner output file or '-' for stdin (required)")
 	fs.StringVar(&opts.scanner, "scanner", "", "Scanner engine: trivy, grype (auto-detected from filename if omitted; required for stdin)")
 	fs.StringVar(&opts.format, "format", "", "Input format: trivy-json, grype-json (auto-detected from filename if omitted; required for stdin)")
-	fs.StringVar(&opts.outFormat, "out", "table", "Output display format: table, json, markdown")
+	fs.StringVar(&opts.outFormat, "out", "table", "Output display format: table, json, markdown, web, tui")
 	fs.StringVar(&opts.minSeverity, "min-severity", "UNKNOWN", "Minimum severity to display (UNKNOWN, LOW, MEDIUM, HIGH, CRITICAL)")
 	fs.StringVar(&opts.failOn, "fail-on", "", "Exit with code 1 if any finding meets/exceeds severity (e.g. HIGH, CRITICAL)")
 	fs.StringVar(&opts.outputFile, "o", "", "Write output to file instead of stdout")
@@ -101,6 +108,14 @@ Flags:`)
 			return 0
 		}
 		return 2
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "view" && opts.outFormat == "table" {
+		opts.outFormat = "web"
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "tui" && opts.outFormat == "table" {
+		opts.outFormat = "tui"
 	}
 
 	if opts.filePath == "" {
@@ -198,6 +213,10 @@ Flags:`)
 	// 5. Render.
 	var renderErr error
 	switch strings.ToLower(opts.outFormat) {
+	case "tui":
+		renderErr = report.RenderTUI(filtered, opts.scanner, opts.filePath)
+	case "web", "ui":
+		renderErr = report.ServeDashboard(filtered, opts.scanner, opts.filePath)
 	case "json":
 		renderErr = renderJSON(dest, filtered)
 	case "markdown", "md":
@@ -205,7 +224,7 @@ Flags:`)
 	case "table":
 		renderErr = renderTable(dest, filtered, opts.scanner, opts.filePath)
 	default:
-		fmt.Fprintf(errWriter, "error: unsupported format %q (allowed: table, json, markdown)\n", opts.outFormat)
+		fmt.Fprintf(errWriter, "error: unsupported format %q (allowed: table, json, markdown, web, tui)\n", opts.outFormat)
 		return 2
 	}
 
