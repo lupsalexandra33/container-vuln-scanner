@@ -1,4 +1,33 @@
-# Service dependencies for local development.
-#
-# Currently empty. Clair and PostgreSQL are added in Stage 3.1 and 4.3.
-services: {}
+version: '3.8'
+
+services:
+  clair-db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: clair
+      POSTGRES_PASSWORD: clairpassword
+      POSTGRES_DB: clair
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clair"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  clair:
+    image: quay.io/projectquay/clair:v4.7.4
+    depends_on:
+      clair-db:
+        condition: service_healthy
+    ports:
+      - "6060:6060" # HTTP API
+      - "6061:6061" # Metrics/Health
+    environment:
+      CLAIR_CONF: /config/config.yaml
+      CLAIR_MODE: combo
+    volumes:
+      - ./clair-config.yaml:/config/config.yaml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6061/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

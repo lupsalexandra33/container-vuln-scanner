@@ -1,0 +1,24 @@
+http_listen_addr: :6060
+intro_api_listen_addr: :6061
+log_level: info
+indexer:
+  connstring: host=clair-db port=5432 user=clair password=clairpassword dbname=clair sslmode=disable
+  scanlock_retry: 10
+  layer_scan_concurrency: 5
+  migrations: true
+matcher:
+  connstring: host=clair-db port=5432 user=clair password=clairpassword dbname=clair sslmode=disable
+  max_conn_pool: 100
+  migrations: true
+notifier:
+  connstring: host=clair-db port=5432 user=clair password=clairpassword dbname=clair sslmode=disable
+  migrations: true
+updaters:
+  sets:
+    - debian
+    - ubuntu
+    - alpine
+    - rhel
+    - suse
+    - oracle
+    - amazon
