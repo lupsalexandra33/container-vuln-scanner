@@ -168,16 +168,19 @@ func TestDiscoverSourcesSkipsUnknownFiles(t *testing.T) {
 
 // TestCapabilitiesDifferBetweenScanners pins the difference correlation depends
 // on: Grype catalogues compiled binaries and Trivy does not, so Trivy's silence
-// on a binary finding is incapacity rather than disagreement.
+// on such a finding is incapacity rather than disagreement.
+//
+// The ecosystem is "generic" rather than "binary" because that is what Grype
+// emits in the PURL for a binary it identified by version detection.
 func TestCapabilitiesDifferBetweenScanners(t *testing.T) {
 	trivy := capabilitiesFor("trivy")
 	grype := capabilitiesFor("grype")
 
-	if containsString(trivy.Ecosystems, "binary") {
-		t.Error("trivy should not declare it catalogues binaries")
+	if containsString(trivy.Ecosystems, "generic") {
+		t.Error("trivy should not declare it catalogues compiled binaries")
 	}
-	if !containsString(grype.Ecosystems, "binary") {
-		t.Error("grype should declare it catalogues binaries")
+	if !containsString(grype.Ecosystems, "generic") {
+		t.Error("grype should declare it catalogues compiled binaries")
 	}
 }
 
