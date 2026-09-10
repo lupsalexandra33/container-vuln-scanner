@@ -44,9 +44,10 @@ type tuiMeta struct {
 // single-source with no conflicts, because there was nothing to correlate
 // against; that's an accurate reflection of the input, not a bug in this view.
 func RenderTUI(rep Report) error {
-	// Hide cursor and clear screen
-	fmt.Print("\033[?25l\033[2J\033[H")
-	defer fmt.Print("\033[?25h\033[0m\r\n")
+	// Enter alternate screen buffer, hide cursor, and clear screen
+	fmt.Print("\033[?1049h\033[?25l\033[2J\033[H")
+	// Restore main screen buffer and show cursor on exit
+	defer fmt.Print("\033[?1049l\033[?25h\033[0m\r\n")
 
 	findings := rep.Findings
 
@@ -145,13 +146,9 @@ func RenderTUI(rep Report) error {
 	fmt.Print("\r\033[2K")
 
 	// 2. Smooth "Slot Machine" Rolling Counter Animation
-	// 45 steps * 35ms = ~1.6s smooth reveal
 	steps := 45
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	// The label must say what actually happened. Correlation only occurred if
-	// more than one scanner participated; a single-scanner report has nothing
-	// to correlate, so the bar must not claim it does.
 	loadingLabel := "Loading findings"
 	if len(scanners) > 1 {
 		loadingLabel = fmt.Sprintf("Correlating records from %d scanners", len(scanners))
@@ -159,7 +156,6 @@ func RenderTUI(rep Report) error {
 
 	for step := 1; step <= steps; step++ {
 		progress := float64(step) / float64(steps)
-		// Ease-out cubic curve for natural decelerating momentum
 		ease := 1.0 - (1.0-progress)*(1.0-progress)*(1.0-progress)
 
 		curTotal := int(float64(meta.total) * ease)
@@ -169,7 +165,6 @@ func RenderTUI(rep Report) error {
 		curLow := int(float64(meta.low) * ease)
 		curUnk := int(float64(meta.unk) * ease)
 
-		// Introduce subtle mechanical digit jitter before snapping in place
 		if step < steps-4 {
 			if curTotal > 5 {
 				curTotal += r.Intn(4) - 2
@@ -193,7 +188,6 @@ func RenderTUI(rep Report) error {
 		renderHeader(meta.engine, meta.source)
 		renderStats(curTotal, curCrit, curHigh, curMed, curLow, curUnk, "ALL")
 
-		// Render animated progress bar underneath
 		barWidth := 28
 		filled := int(float64(barWidth) * ease)
 		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
@@ -217,16 +211,13 @@ func renderHeader(engine, source string) {
 }
 
 func renderStats(total, crit, high, med, low, unk int, activeTab string) {
-	// Total width: 68 characters, strictly aligned with \r\n
 	fmt.Print("  \033[90m┌──────────────────────┬──────────────────────┬──────────────────────┐\033[0m\r\n")
 
-	// Top Headers
 	fmt.Printf("  \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m\r\n",
 		formatCardHeader("1. ALL", activeTab == "ALL"),
 		formatCardHeader("2. CRITICAL", activeTab == "CRITICAL"),
 		formatCardHeader("3. HIGH", activeTab == "HIGH"),
 	)
-	// Top Numbers
 	fmt.Printf("  \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m\r\n",
 		formatCardNumber(total, "\033[1;37m", activeTab == "ALL"),
 		formatCardNumber(crit, "\033[1;31m", activeTab == "CRITICAL"),
@@ -235,13 +226,11 @@ func renderStats(total, crit, high, med, low, unk int, activeTab string) {
 
 	fmt.Print("  \033[90m├──────────────────────┼──────────────────────┼──────────────────────┤\033[0m\r\n")
 
-	// Bottom Headers
 	fmt.Printf("  \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m\r\n",
 		formatCardHeader("4. MEDIUM", activeTab == "MEDIUM"),
 		formatCardHeader("5. LOW", activeTab == "LOW"),
 		formatCardHeader("6. UNKNOWN", activeTab == "UNKNOWN"),
 	)
-	// Bottom Numbers
 	fmt.Printf("  \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m\r\n",
 		formatCardNumber(med, "\033[1;32m", activeTab == "MEDIUM"),
 		formatCardNumber(low, "\033[1;34m", activeTab == "LOW"),
@@ -267,15 +256,12 @@ func formatCardNumber(count int, colorCode string, active bool) string {
 	return fmt.Sprintf("%s%s\033[0m", colorCode, numStr)
 }
 
-// formatConflict renders one field-level disagreement in the same spirit as
-// the CLI table: the resolved value and why, plus what every scanner actually
-// reported, so the resolution can be checked rather than trusted.
 func formatConflict(c model.Conflict) string {
 	vals := make([]string, 0, len(c.Values))
 	for scanner, v := range c.Values {
 		vals = append(vals, fmt.Sprintf("%s=%s", scanner, v))
 	}
-	sort.Strings(vals) // map iteration order isn't stable; the line must render the same way every time
+	sort.Strings(vals)
 
 	reason := c.Reason
 	if reason == "" {
@@ -304,7 +290,7 @@ func runInteractiveLoop(allRows []tuiRow, meta tuiMeta) error {
 	searchQuery := ""
 	cursor := 0
 	scrollOffset := 0
-	pageSize := 10
+	pageSize := 8
 
 	reader := bufio.NewReader(os.Stdin)
 
@@ -334,16 +320,48 @@ func runInteractiveLoop(allRows []tuiRow, meta tuiMeta) error {
 			scrollOffset = cursor - pageSize + 1
 		}
 
-		fmt.Print("\033[H\033[2J")
-		renderHeader(meta.engine, meta.source)
-		renderStats(meta.total, meta.crit, meta.high, meta.med, meta.low, meta.unk, activeTab)
+		// Build entire frame in memory and flush in one write to prevent flicker and ghost lines
+		var b strings.Builder
 
-		// Consolidation summary: only shown when the caller actually told us
-		// the raw count (see Report.RawFindingCount) and correlation did
-		// something — otherwise this line would just repeat the total twice.
+		// Clear screen and home cursor
+		b.WriteString("\033[H\033[2J")
+
+		// Header
+		source := meta.source
+		if len(source) > 30 {
+			source = "..." + source[len(source)-27:]
+		}
+		b.WriteString(fmt.Sprintf(" \033[1;97;45m vulnscan \033[0m \033[1;30;47m TUI \033[0m  \033[90mEngine:\033[0m \033[1;36m%-8s\033[0m \033[90mSource:\033[0m \033[33m%s\033[0m\r\n\r\n", meta.engine, source))
+
+		// Stats Cards (width-limited to fit 80 cols)
+		b.WriteString("  \033[90m┌──────────────────────┬──────────────────────┬──────────────────────┐\033[0m\r\n")
+		b.WriteString(fmt.Sprintf("  \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m\r\n",
+			formatCardHeader("1. ALL", activeTab == "ALL"),
+			formatCardHeader("2. CRITICAL", activeTab == "CRITICAL"),
+			formatCardHeader("3. HIGH", activeTab == "HIGH"),
+		))
+		b.WriteString(fmt.Sprintf("  \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m\r\n",
+			formatCardNumber(meta.total, "\033[1;37m", activeTab == "ALL"),
+			formatCardNumber(meta.crit, "\033[1;31m", activeTab == "CRITICAL"),
+			formatCardNumber(meta.high, "\033[1;33m", activeTab == "HIGH"),
+		))
+		b.WriteString("  \033[90m├──────────────────────┼──────────────────────┼──────────────────────┤\033[0m\r\n")
+		b.WriteString(fmt.Sprintf("  \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m\r\n",
+			formatCardHeader("4. MEDIUM", activeTab == "MEDIUM"),
+			formatCardHeader("5. LOW", activeTab == "LOW"),
+			formatCardHeader("6. UNKNOWN", activeTab == "UNKNOWN"),
+		))
+		b.WriteString(fmt.Sprintf("  \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m %s \033[90m│\033[0m\r\n",
+			formatCardNumber(meta.med, "\033[1;32m", activeTab == "MEDIUM"),
+			formatCardNumber(meta.low, "\033[1;34m", activeTab == "LOW"),
+			formatCardNumber(meta.unk, "\033[1;90m", activeTab == "UNKNOWN"),
+		))
+		b.WriteString("  \033[90m└──────────────────────┴──────────────────────┴──────────────────────┘\033[0m\r\n")
+
+		// Consolidation summary line
 		if meta.rawCount > 0 && meta.rawCount != meta.total {
-			fmt.Printf("\r\n \033[90mraw: %d → consolidated: %d  |  confirmed by 2+: %d  disputed: %d  single-source: %d  conflicts resolved: %d\033[0m\r\n",
-				meta.rawCount, meta.total, meta.confirmed, meta.disputed, meta.singleSource, meta.withConflict)
+			b.WriteString(fmt.Sprintf("\r\n \033[90mraw: %d → consolidated: %d | confirmed: %d | disputed: %d | conflicts: %d\033[0m\r\n",
+				meta.rawCount, meta.total, meta.confirmed, meta.disputed, meta.withConflict))
 		}
 
 		filterDisplay := activeTab
@@ -351,60 +369,52 @@ func runInteractiveLoop(allRows []tuiRow, meta tuiMeta) error {
 			filterDisplay += fmt.Sprintf(" | Search: \033[1;33m%s\033[0m", searchQuery)
 		}
 
-		fmt.Printf("\r\n \033[1;37;44m FINDINGS \033[0m \033[90m(%d/%d) | Filter: \033[1;36m%s\033[0m\r\n\r\n",
-			len(filtered), meta.total, filterDisplay)
+		b.WriteString(fmt.Sprintf("\r\n \033[1;37;44m FINDINGS \033[0m \033[90m(%d/%d) | Filter: \033[1;36m%s\033[0m\r\n\r\n",
+			len(filtered), meta.total, filterDisplay))
 
-		// Column headers - strictly 3 leading spaces
-		fmt.Printf("   \033[1;90m%-6s %-16s %-14s %-10s %-9s %-5s %s\033[0m\r\n",
-			"SEV", "VULNERABILITY", "PACKAGE", "INSTALLED", "STATUS", "CONF", "SOURCES")
-		fmt.Print("  \033[90m──────────────────────────────────────────────────────────────────────────────────\033[0m\r\n")
+		// Strict column header widths
+		b.WriteString(fmt.Sprintf("   \033[1;90m%-5s %-16s %-13s %-9s %-9s %-5s %s\033[0m\r\n",
+			"SEV", "VULNERABILITY", "PACKAGE", "INSTALLED", "STATUS", "CONF", "SOURCES"))
+		b.WriteString("  \033[90m─────────────────────────────────────────────────────────────────────────────\033[0m\r\n")
 
 		if len(filtered) == 0 {
-			fmt.Print("\r\n              \033[90mNo vulnerabilities match the current filter.\033[0m\r\n\r\n")
+			b.WriteString("\r\n              \033[90mNo vulnerabilities match the current filter.\033[0m\r\n\r\n")
 		} else {
 			for i := scrollOffset; i < scrollOffset+pageSize && i < len(filtered); i++ {
 				r := filtered[i]
 				isSelected := (i == cursor)
 
-				pkg := r.pkg
-				if len(pkg) > 14 {
-					pkg = pkg[:11] + "..."
-				}
-				ver := r.version
-				if len(ver) > 10 {
-					ver = ver[:8] + ".."
-				}
-				sources := truncateStr(r.sources, 40)
-
+				pkg := truncateStr(r.pkg, 13)
+				ver := truncateStr(r.version, 9)
+				sources := truncateStr(r.sources, 24)
 				sevTag := colorSeverityPill(r.severity)
 
 				if isSelected {
-					// 1 space + marker '❯' (1 col) + 1 space = exactly 3 chars, matching "   "
-					fmt.Printf(" \033[1;36m❯\033[0m \033[48;5;18;1;97m%-6s %-16s %-14s %-10s %-9s %-5.2f %-40s\033[0m\r\n",
-						r.severity, r.vulnID, pkg, ver, r.fixState, r.confidence, sources)
+					b.WriteString(fmt.Sprintf(" \033[1;36m❯\033[0m \033[48;5;18;1;97m%-5s %-16s %-13s %-9s %-9s %-5.2f %-24s\033[0m\r\n",
+						truncateStr(r.severity, 5), r.vulnID, pkg, ver, r.fixState, r.confidence, sources))
 				} else {
-					// Exactly 3 spaces so columns align with the cursor row above and below
-					fmt.Printf("   %-6s \033[37m%-16s\033[0m \033[90m%-14s\033[0m \033[90m%-10s\033[0m \033[90m%-9s\033[0m \033[90m%-5.2f\033[0m \033[90m%s\033[0m\r\n",
-						sevTag, r.vulnID, pkg, ver, r.fixState, r.confidence, sources)
+					b.WriteString(fmt.Sprintf("   %-5s \033[37m%-16s\033[0m \033[90m%-13s\033[0m \033[90m%-9s\033[0m \033[90m%-9s\033[0m \033[90m%-5.2f\033[0m \033[90m%s\033[0m\r\n",
+						sevTag, r.vulnID, pkg, ver, r.fixState, r.confidence, sources))
 				}
 
-				// Conflicts render as a secondary, unselectable row directly
-				// under the finding they belong to — the resolution and the
-				// values it rejected, not just a confidence number.
+				// Clip conflict line to 72 chars so it never wraps in narrow terminals
 				for _, cl := range r.conflicts {
-					fmt.Printf("       \033[2;33m↳ %s\033[0m\r\n", truncateStr(cl, 96))
+					b.WriteString(fmt.Sprintf("       \033[2;33m↳ %s\033[0m\r\n", truncateStr(cl, 72)))
 				}
 			}
 		}
 
-		fmt.Print("\r\n \033[90m[↑/↓] Move  [1-6] Filter  [/] Search  [c] Reset  [q] Quit\033[0m\r\n")
+		b.WriteString("\r\n \033[90m[↑/↓] Move  [1-6] Filter  [/] Search  [c] Reset  [q] Quit\033[0m\r\n")
 
-		b, err := reader.ReadByte()
+		// Flush whole frame to stdout at once
+		os.Stdout.WriteString(b.String())
+
+		byteIn, err := reader.ReadByte()
 		if err != nil {
 			break
 		}
 
-		switch b {
+		switch byteIn {
 		case 'q', 3: // 'q' or Ctrl+C
 			return nil
 		case 'j':
@@ -444,15 +454,17 @@ func runInteractiveLoop(allRows []tuiRow, meta tuiMeta) error {
 			fmt.Print("\033[?25l")
 			cursor = 0
 		case 27: // Arrow keys
-			if reader.Buffered() >= 2 {
+			if reader.Buffered() > 0 {
 				b1, _ := reader.ReadByte()
-				b2, _ := reader.ReadByte()
-				if b1 == '[' || b1 == 'O' {
-					switch b2 {
-					case 'A': // UP
-						cursor--
-					case 'B': // DOWN
-						cursor++
+				if reader.Buffered() > 0 {
+					b2, _ := reader.ReadByte()
+					if b1 == '[' || b1 == 'O' {
+						switch b2 {
+						case 'A': // UP
+							cursor--
+						case 'B': // DOWN
+							cursor++
+						}
 					}
 				}
 			}
