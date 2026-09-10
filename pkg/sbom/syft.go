@@ -24,8 +24,10 @@ func (s *SyftGenerator) Name() string {
 // Generate invokes the syft CLI to produce a CycloneDX JSON SBOM for the target.
 func (s *SyftGenerator) Generate(ctx context.Context, target model.Target) ([]byte, error) {
 	// Generate CycloneDX JSON
+	// Pin to cyclonedx-json@1.5 because downstream tools like osv-scanner 1.9.2
+	// will reject newer CycloneDX 1.6 specifications.
 	// Using scanner.RunTool to reuse our execution substrate (handles timeout, ctx cancellation)
-	res, err := scanner.RunTool(ctx, "", "syft", "packages", target.Reference, "-o", "cyclonedx-json", "-q")
+	res, err := scanner.RunTool(ctx, "", "syft", "packages", target.Reference, "-o", "cyclonedx-json@1.5", "-q")
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute syft: %w", err)
 	}
