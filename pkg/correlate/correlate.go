@@ -3,6 +3,7 @@ package correlate
 import (
 	"sort"
 
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/layers"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/scanner"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/trust"
@@ -127,6 +128,8 @@ func CorrelateWith(
 	}
 	return out
 }
+
+// CorrelateWithProvenance correlates findings and attributes findings to image layers.
 
 // correlationKey identifies the group a finding belongs to.
 //
@@ -287,12 +290,20 @@ func mergeText(findings []model.Finding) (title, description string, refs []stri
 	return title, description, refs
 }
 
-// originFrom takes the first location any scanner reported. Precise layer
-// attribution is [4.2]; this is the raw layer identifier the scanner supplied.
 func originFrom(findings []model.Finding) *model.Origin {
+	return originFromWithProvenance(findings, nil)
+}
+
+func originFromWithProvenance(findings []model.Finding, prov *layers.Provenance) *model.Origin {
+	if prov != nil {
+		return prov.Resolve(findings)
+	}
 	for _, f := range findings {
 		if f.Location != "" {
-			return &model.Origin{LayerDigest: f.Location}
+			return &model.Origin{
+				LayerDigest: f.Location,
+				LayerIndex:  -1,
+			}
 		}
 	}
 	return nil
