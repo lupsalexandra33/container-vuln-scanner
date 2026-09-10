@@ -214,9 +214,12 @@ Flags:`)
 	var renderErr error
 	switch strings.ToLower(opts.outFormat) {
 	case "tui":
-		renderErr = report.RenderTUI(filtered, opts.scanner, opts.filePath)
+		// normalize has no correlation step — one scanner, one file. Wrap it
+		// as a Report so it renders through the same TUI as `scan --out tui`,
+		// but honestly: single source, no confidence derivation, no conflicts.
+		renderErr = report.RenderTUI(report.SingleScannerReport(filtered, opts.scanner, opts.filePath))
 	case "web", "ui":
-		renderErr = report.ServeDashboard(filtered, opts.scanner, opts.filePath)
+		renderErr = report.ServeDashboard(report.SingleScannerReport(filtered, opts.scanner, opts.filePath))
 	case "json":
 		renderErr = renderJSON(dest, filtered)
 	case "markdown", "md":

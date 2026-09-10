@@ -9,15 +9,25 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/correlate"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/layers"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/normalize"
+<<<<<<< HEAD
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/policy"
+=======
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/report"
+>>>>>>> 39c323a (fixed formatting)
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/scanner"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/trust"
 )
+
+// toolVersion is reported to the TUI/web dashboard header. If the binary
+// already carries a real version (e.g. set via -ldflags in the release
+// build, or a var in main.go), wire that in here instead of this placeholder.
+const toolVersion = "dev"
 
 // scanSource pairs a scanner name with the format its output is in.
 type scanSource struct {
@@ -59,17 +69,27 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 
 	var (
+<<<<<<< HEAD
 		dir        = fs.String("from", "", "directory of recorded scanner output to correlate")
 		format     = fs.String("out", "table", "output format: table, json")
 		showAll    = fs.Bool("all", false, "include findings only one scanner reported")
 		minConf    = fs.Float64("min-confidence", 0, "hide findings below this confidence (0 to 1)")
 		explain    = fs.Bool("explain-weights", false, "print the trust weight applied to each scanner and why")
 		policyName = fs.String("policy", "", "policy to apply: advisory, balanced, strict (default: none)")
+=======
+		dir     = fs.String("from", "", "directory of recorded scanner output to correlate")
+		format  = fs.String("out", "table", "output format: table, json, tui, web")
+		showAll = fs.Bool("all", false, "include findings only one scanner reported")
+		minConf = fs.Float64("min-confidence", 0, "hide findings below this confidence (0 to 1)")
+		explain = fs.Bool("explain-weights", false, "print the trust weight applied to each scanner and why")
+>>>>>>> 39c323a (fixed formatting)
 	)
 
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: vulnscan scan --from <directory> [flags]")
 		fmt.Fprintln(stderr, "\nCorrelates recorded output from several scanners for one image.")
+		fmt.Fprintln(stderr, "\n--out tui and --out web render the same correlated findings")
+		fmt.Fprintln(stderr, "interactively, with confidence and resolved conflicts included.")
 		fmt.Fprintln(stderr, "\nFlags:")
 		fs.PrintDefaults()
 	}
@@ -171,6 +191,24 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		if *explain {
 			writeWeightExplanation(stdout, participants, consolidated, weights)
 		}
+<<<<<<< HEAD
+=======
+		return 0
+	case "tui":
+		rep := buildReport(*dir, consolidated, len(findings))
+		if err := report.RenderTUI(rep); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return 0
+	case "web":
+		rep := buildReport(*dir, consolidated, len(findings))
+		if err := report.ServeDashboard(rep); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return 0
+>>>>>>> 39c323a (fixed formatting)
 	default:
 		fmt.Fprintf(stderr, "error: unknown output format %q\n", *format)
 		return 2
@@ -198,6 +236,22 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		return decision.Outcome.ExitCode()
 	}
 	return 0
+}
+
+// buildReport assembles the report.Report that TUI and web output share with
+// the JSON/SARIF exporters, so all four render the same correlated data
+// through the same shape rather than each inventing its own view of it.
+func buildReport(target string, consolidated []model.ConsolidatedFinding, rawCount int) report.Report {
+	rep := report.Report{
+		ToolName:        "vulnscan",
+		ToolVersion:     toolVersion,
+		Target:          target,
+		GeneratedAt:     time.Now(),
+		Findings:        consolidated,
+		RawFindingCount: rawCount,
+	}
+	rep.CalculateSummary()
+	return rep
 }
 
 // discoverSources finds recorded scanner output in a directory, identifying the

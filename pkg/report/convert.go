@@ -56,4 +56,3 @@ func SingleScannerReport(findings []model.Finding, scannerName, target string) R
 	rep.CalculateSummary()
 	return rep
 }
-

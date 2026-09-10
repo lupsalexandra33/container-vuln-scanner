@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,35 +14,78 @@ import (
 )
 
 type tuiRow struct {
-	severity string
-	vulnID   string
-	pkg      string
-	version  string
-	fixState string
+	severity   string
+	vulnID     string
+	pkg        string
+	version    string
+	fixState   string
+	confidence float64
+	sources    string
+	conflicts  []string
+}
+
+// tuiMeta bundles everything the header, stats, and summary lines need, so
+// runInteractiveLoop isn't threaded through a dozen positional parameters.
+type tuiMeta struct {
+	engine string // scanners that participated, e.g. "grype+trivy"
+	source string
+
+	total                                           int
+	crit, high, med, low, unk                       int
+	rawCount                                        int // 0 means unknown, see Report.RawFindingCount
+	confirmed, disputed, singleSource, withConflict int
 }
 
 // RenderTUI executes the startup animation sequence and enters the interactive browser.
-func RenderTUI(findings []model.Finding, scanner, sourcePath string) error {
+//
+// rep.Findings is expected to be the output of correlation — see
+// `vulnscan scan --from <dir> --out tui`. Rendering a Report assembled from a
+// single scanner's raw output still works, but every finding will show as
+// single-source with no conflicts, because there was nothing to correlate
+// against; that's an accurate reflection of the input, not a bug in this view.
+func RenderTUI(rep Report) error {
 	// Hide cursor and clear screen
 	fmt.Print("\033[?25l\033[2J\033[H")
 	defer fmt.Print("\033[?25h\033[0m\r\n")
 
-	// Pre-calculate counts and prepare rows
-	var crit, high, med, low, unk int
+	findings := rep.Findings
+
+	var meta tuiMeta
+	meta.source = rep.Target
+	meta.rawCount = rep.RawFindingCount
+
 	rows := make([]tuiRow, 0, len(findings))
+	scannerSet := map[string]bool{}
+
 	for _, f := range findings {
-		sev := f.PrimarySeverity()
-		switch sev {
+		switch f.Severity {
 		case model.SeverityCritical:
-			crit++
+			meta.crit++
 		case model.SeverityHigh:
-			high++
+			meta.high++
 		case model.SeverityMedium:
-			med++
+			meta.med++
 		case model.SeverityLow:
-			low++
+			meta.low++
 		default:
-			unk++
+			meta.unk++
+		}
+
+		for _, v := range f.Verdicts {
+			scannerSet[v.Scanner] = true
+		}
+
+		if len(f.ReportedBy()) > 1 {
+			meta.confirmed++
+		}
+		if f.IsDisputed() {
+			meta.disputed++
+		}
+		if f.IsSingleSource() {
+			meta.singleSource++
+		}
+		if len(f.Conflicts) > 0 {
+			meta.withConflict++
 		}
 
 		id := f.Vulnerability.PreferredID().ID
@@ -49,21 +93,53 @@ func RenderTUI(findings []model.Finding, scanner, sourcePath string) error {
 			id = "UNKNOWN"
 		}
 
+		pkgName := f.Package.Name
+		if pkgName == "" {
+			pkgName = "-"
+		}
+
+		in := f.ConfidenceInputs()
+		src := fmt.Sprintf("%d/%d %s", in.AgreeingCount, in.ParticipatingCount, strings.Join(f.ReportedBy(), ","))
+		if missed := f.RanAndMissedBy(); len(missed) > 0 {
+			src += " missed:" + strings.Join(missed, ",")
+		}
+		if nodata := f.HadNoDataFor(); len(nodata) > 0 {
+			src += " nodata:" + strings.Join(nodata, ",")
+		}
+
+		var conflictLines []string
+		for _, c := range f.Conflicts {
+			conflictLines = append(conflictLines, formatConflict(c))
+		}
+
 		rows = append(rows, tuiRow{
-			severity: string(sev),
-			vulnID:   id,
-			pkg:      f.PackageName,
-			version:  f.InstalledVersion,
-			fixState: string(f.FixState),
+			severity:   string(f.Severity),
+			vulnID:     id,
+			pkg:        pkgName,
+			version:    f.InstalledVersion,
+			fixState:   string(f.FixState),
+			confidence: f.Confidence,
+			sources:    src,
+			conflicts:  conflictLines,
 		})
 	}
-	total := len(rows)
+	meta.total = len(rows)
+
+	scanners := make([]string, 0, len(scannerSet))
+	for s := range scannerSet {
+		scanners = append(scanners, s)
+	}
+	sort.Strings(scanners)
+	meta.engine = strings.Join(scanners, "+")
+	if meta.engine == "" {
+		meta.engine = "unknown"
+	}
 
 	// 1. Sleek Braille Spinner
 	spinnerFrames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	for i := 0; i < 20; i++ {
 		frame := spinnerFrames[i%len(spinnerFrames)]
-		fmt.Printf("\r\033[1;36m%s\033[0m  Ingesting scanner AST from \033[1;35m%s\033[0m...", frame, scanner)
+		fmt.Printf("\r\033[1;36m%s\033[0m  Loading findings from \033[1;35m%s\033[0m...", frame, meta.engine)
 		time.Sleep(45 * time.Millisecond)
 	}
 	fmt.Print("\r\033[2K")
@@ -73,17 +149,25 @@ func RenderTUI(findings []model.Finding, scanner, sourcePath string) error {
 	steps := 45
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
+	// The label must say what actually happened. Correlation only occurred if
+	// more than one scanner participated; a single-scanner report has nothing
+	// to correlate, so the bar must not claim it does.
+	loadingLabel := "Loading findings"
+	if len(scanners) > 1 {
+		loadingLabel = fmt.Sprintf("Correlating records from %d scanners", len(scanners))
+	}
+
 	for step := 1; step <= steps; step++ {
 		progress := float64(step) / float64(steps)
 		// Ease-out cubic curve for natural decelerating momentum
 		ease := 1.0 - (1.0-progress)*(1.0-progress)*(1.0-progress)
 
-		curTotal := int(float64(total) * ease)
-		curCrit := int(float64(crit) * ease)
-		curHigh := int(float64(high) * ease)
-		curMed := int(float64(med) * ease)
-		curLow := int(float64(low) * ease)
-		curUnk := int(float64(unk) * ease)
+		curTotal := int(float64(meta.total) * ease)
+		curCrit := int(float64(meta.crit) * ease)
+		curHigh := int(float64(meta.high) * ease)
+		curMed := int(float64(meta.med) * ease)
+		curLow := int(float64(meta.low) * ease)
+		curUnk := int(float64(meta.unk) * ease)
 
 		// Introduce subtle mechanical digit jitter before snapping in place
 		if step < steps-4 {
@@ -97,23 +181,23 @@ func RenderTUI(findings []model.Finding, scanner, sourcePath string) error {
 				curMed += r.Intn(4) - 2
 			}
 		} else {
-			curTotal = total
-			curCrit = crit
-			curHigh = high
-			curMed = med
-			curLow = low
-			curUnk = unk
+			curTotal = meta.total
+			curCrit = meta.crit
+			curHigh = meta.high
+			curMed = meta.med
+			curLow = meta.low
+			curUnk = meta.unk
 		}
 
 		fmt.Print("\033[H")
-		renderHeader(scanner, sourcePath)
+		renderHeader(meta.engine, meta.source)
 		renderStats(curTotal, curCrit, curHigh, curMed, curLow, curUnk, "ALL")
 
 		// Render animated progress bar underneath
 		barWidth := 28
 		filled := int(float64(barWidth) * ease)
 		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
-		fmt.Printf("\r\n  \033[90mCorrelating records: \033[1;36m[%s]\033[0m \033[90m%3d%%\033[0m\r\n", bar, int(progress*100))
+		fmt.Printf("\r\n  \033[90m%s: \033[1;36m[%s]\033[0m \033[90m%3d%%\033[0m\r\n", loadingLabel, bar, int(progress*100))
 
 		time.Sleep(35 * time.Millisecond)
 	}
@@ -122,14 +206,14 @@ func RenderTUI(findings []model.Finding, scanner, sourcePath string) error {
 	time.Sleep(150 * time.Millisecond)
 
 	// 4. Launch Interactive Terminal UI Loop
-	return runInteractiveLoop(rows, scanner, sourcePath, total, crit, high, med, low, unk)
+	return runInteractiveLoop(rows, meta)
 }
 
-func renderHeader(scanner, source string) {
+func renderHeader(engine, source string) {
 	if len(source) > 34 {
 		source = "..." + source[len(source)-31:]
 	}
-	fmt.Printf(" \033[1;97;45m vulnscan \033[0m \033[1;30;47m TUI \033[0m  \033[90mEngine:\033[0m \033[1;36m%-8s\033[0m \033[90mSource:\033[0m \033[33m%s\033[0m\r\n\r\n", scanner, source)
+	fmt.Printf(" \033[1;97;45m vulnscan \033[0m \033[1;30;47m TUI \033[0m  \033[90mEngine:\033[0m \033[1;36m%-8s\033[0m \033[90mSource:\033[0m \033[33m%s\033[0m\r\n\r\n", engine, source)
 }
 
 func renderStats(total, crit, high, med, low, unk int, activeTab string) {
@@ -183,7 +267,34 @@ func formatCardNumber(count int, colorCode string, active bool) string {
 	return fmt.Sprintf("%s%s\033[0m", colorCode, numStr)
 }
 
-func runInteractiveLoop(allRows []tuiRow, scanner, source string, total, crit, high, med, low, unk int) error {
+// formatConflict renders one field-level disagreement in the same spirit as
+// the CLI table: the resolved value and why, plus what every scanner actually
+// reported, so the resolution can be checked rather than trusted.
+func formatConflict(c model.Conflict) string {
+	vals := make([]string, 0, len(c.Values))
+	for scanner, v := range c.Values {
+		vals = append(vals, fmt.Sprintf("%s=%s", scanner, v))
+	}
+	sort.Strings(vals) // map iteration order isn't stable; the line must render the same way every time
+
+	reason := c.Reason
+	if reason == "" {
+		reason = "no reason recorded"
+	}
+	return fmt.Sprintf("%s → resolved %q (%s); reported: %s", c.Kind, c.Resolved, reason, strings.Join(vals, ", "))
+}
+
+func truncateStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		return s[:n]
+	}
+	return s[:n-1] + "…"
+}
+
+func runInteractiveLoop(allRows []tuiRow, meta tuiMeta) error {
 	_ = exec.Command("sh", "-c", "stty raw -echo < /dev/tty").Run()
 	defer func() {
 		_ = exec.Command("sh", "-c", "stty sane < /dev/tty").Run()
@@ -224,8 +335,16 @@ func runInteractiveLoop(allRows []tuiRow, scanner, source string, total, crit, h
 		}
 
 		fmt.Print("\033[H\033[2J")
-		renderHeader(scanner, source)
-		renderStats(total, crit, high, med, low, unk, activeTab)
+		renderHeader(meta.engine, meta.source)
+		renderStats(meta.total, meta.crit, meta.high, meta.med, meta.low, meta.unk, activeTab)
+
+		// Consolidation summary: only shown when the caller actually told us
+		// the raw count (see Report.RawFindingCount) and correlation did
+		// something — otherwise this line would just repeat the total twice.
+		if meta.rawCount > 0 && meta.rawCount != meta.total {
+			fmt.Printf("\r\n \033[90mraw: %d → consolidated: %d  |  confirmed by 2+: %d  disputed: %d  single-source: %d  conflicts resolved: %d\033[0m\r\n",
+				meta.rawCount, meta.total, meta.confirmed, meta.disputed, meta.singleSource, meta.withConflict)
+		}
 
 		filterDisplay := activeTab
 		if searchQuery != "" {
@@ -233,11 +352,12 @@ func runInteractiveLoop(allRows []tuiRow, scanner, source string, total, crit, h
 		}
 
 		fmt.Printf("\r\n \033[1;37;44m FINDINGS \033[0m \033[90m(%d/%d) | Filter: \033[1;36m%s\033[0m\r\n\r\n",
-			len(filtered), total, filterDisplay)
+			len(filtered), meta.total, filterDisplay)
 
 		// Column headers - strictly 3 leading spaces
-		fmt.Printf("   \033[1;90m%-8s %-17s %-16s %-11s %-10s\033[0m\r\n", "SEV", "VULNERABILITY", "PACKAGE", "INSTALLED", "STATUS")
-		fmt.Print("  \033[90m──────────────────────────────────────────────────────────────────\033[0m\r\n")
+		fmt.Printf("   \033[1;90m%-6s %-16s %-14s %-10s %-9s %-5s %s\033[0m\r\n",
+			"SEV", "VULNERABILITY", "PACKAGE", "INSTALLED", "STATUS", "CONF", "SOURCES")
+		fmt.Print("  \033[90m──────────────────────────────────────────────────────────────────────────────────\033[0m\r\n")
 
 		if len(filtered) == 0 {
 			fmt.Print("\r\n              \033[90mNo vulnerabilities match the current filter.\033[0m\r\n\r\n")
@@ -247,24 +367,32 @@ func runInteractiveLoop(allRows []tuiRow, scanner, source string, total, crit, h
 				isSelected := (i == cursor)
 
 				pkg := r.pkg
-				if len(pkg) > 16 {
-					pkg = pkg[:13] + "..."
+				if len(pkg) > 14 {
+					pkg = pkg[:11] + "..."
 				}
 				ver := r.version
-				if len(ver) > 11 {
-					ver = ver[:9] + ".."
+				if len(ver) > 10 {
+					ver = ver[:8] + ".."
 				}
+				sources := truncateStr(r.sources, 40)
 
 				sevTag := colorSeverityPill(r.severity)
 
 				if isSelected {
 					// 1 space + marker '❯' (1 col) + 1 space = exactly 3 chars, matching "   "
-					fmt.Printf(" \033[1;36m❯\033[0m \033[48;5;18;1;97m%-8s %-17s %-16s %-11s %-10s\033[0m\r\n",
-						r.severity, r.vulnID, pkg, ver, r.fixState)
+					fmt.Printf(" \033[1;36m❯\033[0m \033[48;5;18;1;97m%-6s %-16s %-14s %-10s %-9s %-5.2f %-40s\033[0m\r\n",
+						r.severity, r.vulnID, pkg, ver, r.fixState, r.confidence, sources)
 				} else {
 					// Exactly 3 spaces so columns align with the cursor row above and below
-					fmt.Printf("   %-8s \033[37m%-17s\033[0m \033[90m%-16s\033[0m \033[90m%-11s\033[0m \033[90m%-10s\033[0m\r\n",
-						sevTag, r.vulnID, pkg, ver, r.fixState)
+					fmt.Printf("   %-6s \033[37m%-16s\033[0m \033[90m%-14s\033[0m \033[90m%-10s\033[0m \033[90m%-9s\033[0m \033[90m%-5.2f\033[0m \033[90m%s\033[0m\r\n",
+						sevTag, r.vulnID, pkg, ver, r.fixState, r.confidence, sources)
+				}
+
+				// Conflicts render as a secondary, unselectable row directly
+				// under the finding they belong to — the resolution and the
+				// values it rejected, not just a confidence number.
+				for _, cl := range r.conflicts {
+					fmt.Printf("       \033[2;33m↳ %s\033[0m\r\n", truncateStr(cl, 96))
 				}
 			}
 		}

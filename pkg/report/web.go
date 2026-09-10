@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
@@ -22,10 +23,21 @@ type FindingView struct {
 	FixState      string
 	FixedVersions string
 	IsFixable     bool
+
+	// Confidence, Sources, and Conflicts surface the correlation result —
+	// how many scanners agreed, which ones, and what was resolved and why.
+	// These are empty/zero for a Report built from a single scanner's raw
+	// output, which is accurate: there is nothing to correlate in that case.
+	Confidence     float64
+	ConfidenceStr  string
+	Sources        string
+	IsSingleSource bool
+	IsDisputed     bool
+	Conflicts      []string
 }
 
 type DashboardData struct {
-	Scanner    string
+	Engine     string
 	SourceFile string
 	TotalCount int
 	CritCount  int
@@ -34,6 +46,16 @@ type DashboardData struct {
 	LowCount   int
 	UnkCount   int
 	Findings   []FindingView
+
+	// Consolidation summary. ShowConsolidation is false when RawCount is
+	// unknown (Report.RawFindingCount unset) or equal to TotalCount, so the
+	// template never claims correlation happened when it didn't.
+	ShowConsolidation bool
+	RawCount          int
+	Confirmed         int
+	Disputed          int
+	SingleSource      int
+	WithConflicts     int
 }
 
 const dashboardHTML = `<!DOCTYPE html>
@@ -66,6 +88,9 @@ const dashboardHTML = `<!DOCTYPE html>
       --low-bg: rgba(56, 189, 248, 0.12);
       --unk: #94a3b8;
       --unk-bg: rgba(148, 163, 184, 0.12);
+      --conf-high: #4ade80;
+      --conf-mid: #eab308;
+      --conf-low: #ef4444;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -77,14 +102,14 @@ const dashboardHTML = `<!DOCTYPE html>
       -webkit-font-smoothing: antialiased;
     }
     .container {
-      max-width: 1240px;
+      max-width: 1320px;
       margin: 0 auto;
     }
     header {
       display: flex;
       justify-content: space-between;
       align-items: flex-end;
-      margin-bottom: 28px;
+      margin-bottom: 20px;
       padding-bottom: 20px;
       border-bottom: 1px solid var(--border);
     }
@@ -121,6 +146,22 @@ const dashboardHTML = `<!DOCTYPE html>
       border-radius: 4px;
       border: 1px solid var(--border);
     }
+
+    /* Consolidation summary strip */
+    .consolidation-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 16px;
+      margin-bottom: 20px;
+      font-size: 13px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .consolidation-strip strong { color: var(--text); }
 
     /* Stat Cards */
     .stats-grid {
@@ -257,10 +298,11 @@ const dashboardHTML = `<!DOCTYPE html>
       border-bottom: 1px solid var(--border);
       vertical-align: middle;
     }
-    tbody tr:last-child td {
+    tbody tr.finding-row:last-of-type td,
+    tbody tr.conflict-row:last-child td {
       border-bottom: none;
     }
-    tbody tr:hover {
+    tbody tr.finding-row:hover {
       background: var(--surface-hover);
     }
     .mono {
@@ -302,6 +344,30 @@ const dashboardHTML = `<!DOCTYPE html>
       color: #4ade80;
     }
 
+    /* Confidence + sources */
+    .conf-val {
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .conf-high { color: var(--conf-high); }
+    .conf-mid  { color: var(--conf-mid); }
+    .conf-low  { color: var(--conf-low); }
+    .sources {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .sources .disputed { color: var(--high); }
+
+    /* Conflict secondary row */
+    tr.conflict-row td {
+      padding: 6px 16px 10px 40px;
+      background: #0d1220;
+      font-size: 12px;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+    }
+    tr.conflict-row .arrow { color: #eab308; margin-right: 6px; }
+
     /* Empty state */
     .empty-state {
       padding: 48px 24px;
@@ -322,11 +388,21 @@ const dashboardHTML = `<!DOCTYPE html>
       <div>
         <div class="brand">
           <h1>vulnscan report</h1>
-          <span class="brand-badge">{{.Scanner}}</span>
+          <span class="brand-badge">{{.Engine}}</span>
         </div>
         <div class="metadata">Source: <code>{{.SourceFile}}</code></div>
       </div>
     </header>
+
+    {{if .ShowConsolidation}}
+    <div class="consolidation-strip">
+      <span><strong>{{.RawCount}}</strong> raw findings &rarr; <strong>{{.TotalCount}}</strong> consolidated</span>
+      <span><strong>{{.Confirmed}}</strong> confirmed by 2+ scanners</span>
+      <span><strong>{{.Disputed}}</strong> disputed</span>
+      <span><strong>{{.SingleSource}}</strong> single-source</span>
+      <span><strong>{{.WithConflicts}}</strong> conflicts resolved</span>
+    </div>
+    {{end}}
 
     <section class="stats-grid">
       <div class="stat-card active" data-filter="all" onclick="selectSeverity('all')">
@@ -370,17 +446,20 @@ const dashboardHTML = `<!DOCTYPE html>
       <table id="vulnTable">
         <thead>
           <tr>
-            <th style="width: 120px;">Severity</th>
-            <th style="width: 190px;">Vulnerability</th>
+            <th style="width: 100px;">Severity</th>
+            <th style="width: 170px;">Vulnerability</th>
             <th>Package</th>
-            <th style="width: 140px;">Installed</th>
-            <th style="width: 110px;">Status</th>
-            <th>Fixed Version</th>
+            <th style="width: 120px;">Installed</th>
+            <th style="width: 100px;">Status</th>
+            <th style="width: 90px;">Fixed Version</th>
+            <th style="width: 70px;">Conf</th>
+            <th style="width: 220px;">Sources</th>
           </tr>
         </thead>
         <tbody>
           {{range .Findings}}
-          <tr data-severity="{{.SeverityClass}}" data-fixable="{{if .IsFixable}}true{{else}}false{{end}}">
+          {{$finding := .}}
+          <tr class="finding-row" data-severity="{{.SeverityClass}}" data-fixable="{{if .IsFixable}}true{{else}}false{{end}}">
             <td><span class="badge badge-{{.SeverityClass}}">{{.Severity}}</span></td>
             <td>
               <a class="mono cve-link" href="https://nvd.nist.gov/vuln/detail/{{.VulnID}}" target="_blank" rel="noopener">
@@ -391,7 +470,18 @@ const dashboardHTML = `<!DOCTYPE html>
             <td class="mono">{{.InstalledVer}}</td>
             <td><span class="fix-state {{if eq .FixState "fixed"}}fixed{{end}}">{{.FixState}}</span></td>
             <td class="mono">{{if .FixedVersions}}{{.FixedVersions}}{{else}}<span style="color:var(--text-dim)">—</span>{{end}}</td>
+            <td>
+              {{if .ConfidenceStr}}<span class="conf-val {{if ge .Confidence 0.8}}conf-high{{else if ge .Confidence 0.5}}conf-mid{{else}}conf-low{{end}}">{{.ConfidenceStr}}</span>{{else}}<span style="color:var(--text-dim)">—</span>{{end}}
+            </td>
+            <td class="sources mono">
+              {{if .Sources}}{{.Sources}}{{if .IsDisputed}} <span class="disputed">(disputed)</span>{{end}}{{else}}<span style="color:var(--text-dim)">—</span>{{end}}
+            </td>
           </tr>
+          {{range .Conflicts}}
+          <tr class="conflict-row" data-severity="{{$finding.SeverityClass}}">
+            <td colspan="8"><span class="arrow">↳</span>{{.}}</td>
+          </tr>
+          {{end}}
           {{end}}
         </tbody>
       </table>
@@ -422,24 +512,29 @@ const dashboardHTML = `<!DOCTYPE html>
       const q = input ? input.value.toLowerCase().trim() : '';
       const fixableCheckbox = document.getElementById('fixableOnly');
       const fixableOnly = fixableCheckbox ? fixableCheckbox.checked : false;
-      const rows = document.querySelectorAll('#vulnTable tbody tr');
+      const rows = document.querySelectorAll('#vulnTable tbody tr.finding-row');
       let visible = 0;
 
       rows.forEach(r => {
         const rowSev = r.getAttribute('data-severity') || '';
         const rowFixable = r.getAttribute('data-fixable') === 'true';
         const textContent = r.innerText.toLowerCase();
-        
+
         const matchesQuery = !q || textContent.includes(q);
         const matchesSev = (activeSeverity === 'all') || (rowSev === activeSeverity);
         const matchesFix = !fixableOnly || rowFixable;
 
-        if (matchesQuery && matchesSev && matchesFix) {
-          r.style.display = '';
-          visible++;
-        } else {
-          r.style.display = 'none';
+        const show = matchesQuery && matchesSev && matchesFix;
+        r.style.display = show ? '' : 'none';
+        // Conflict rows are the immediately-following siblings that share
+        // this finding's severity; keep them attached to their parent row.
+        let sibling = r.nextElementSibling;
+        while (sibling && sibling.classList.contains('conflict-row')) {
+          sibling.style.display = show ? '' : 'none';
+          sibling = sibling.nextElementSibling;
         }
+
+        if (show) visible++;
       });
 
       const counter = document.getElementById('matchCounter');
@@ -466,16 +561,25 @@ const dashboardHTML = `<!DOCTYPE html>
 </html>`
 
 // ServeDashboard starts a local HTTP server and opens the browser.
-func ServeDashboard(findings []model.Finding, scanner, sourcePath string) error {
+//
+// rep.Findings is expected to be correlation output — see
+// `vulnscan scan --from <dir> --out web`. A Report built from a single
+// scanner's raw findings still renders, but the Confidence/Sources columns
+// and consolidation strip will be empty/hidden, since there is nothing to
+// correlate in that case.
+func ServeDashboard(rep Report) error {
+	findings := rep.Findings
 	viewItems := make([]FindingView, 0, len(findings))
 
 	var crit, high, med, low, unk int
+	var confirmed, disputed, singleSource, withConflicts int
+	scannerSet := map[string]bool{}
+
 	for _, f := range findings {
-		sev := f.PrimarySeverity()
-		sevStr := string(sev)
+		sevStr := string(f.Severity)
 		sevClass := strings.ToLower(sevStr)
 
-		switch sev {
+		switch f.Severity {
 		case model.SeverityCritical:
 			crit++
 		case model.SeverityHigh:
@@ -488,6 +592,22 @@ func ServeDashboard(findings []model.Finding, scanner, sourcePath string) error 
 			unk++
 		}
 
+		for _, v := range f.Verdicts {
+			scannerSet[v.Scanner] = true
+		}
+		if len(f.ReportedBy()) > 1 {
+			confirmed++
+		}
+		if f.IsDisputed() {
+			disputed++
+		}
+		if f.IsSingleSource() {
+			singleSource++
+		}
+		if len(f.Conflicts) > 0 {
+			withConflicts++
+		}
+
 		vulnID := f.Vulnerability.PreferredID().ID
 		if vulnID == "" {
 			vulnID = "UNKNOWN"
@@ -495,28 +615,72 @@ func ServeDashboard(findings []model.Finding, scanner, sourcePath string) error 
 
 		fixedVerStr := strings.Join(f.FixedVersions, ", ")
 
+		in := f.ConfidenceInputs()
+		sources := fmt.Sprintf("%d/%d %s", in.AgreeingCount, in.ParticipatingCount, strings.Join(f.ReportedBy(), ","))
+		if missed := f.RanAndMissedBy(); len(missed) > 0 {
+			sources += " · missed: " + strings.Join(missed, ", ")
+		}
+		if nodata := f.HadNoDataFor(); len(nodata) > 0 {
+			sources += " · no data: " + strings.Join(nodata, ", ")
+		}
+
+		var conflictLines []string
+		for _, c := range f.Conflicts {
+			conflictLines = append(conflictLines, formatConflict(c))
+		}
+
+		pkgName := f.Package.Name
+		if pkgName == "" {
+			pkgName = "-"
+		}
+
 		viewItems = append(viewItems, FindingView{
-			Severity:      sevStr,
-			SeverityClass: sevClass,
-			VulnID:        vulnID,
-			PackageName:   f.PackageName,
-			InstalledVer:  f.InstalledVersion,
-			FixState:      string(f.FixState),
-			FixedVersions: fixedVerStr,
-			IsFixable:     len(f.FixedVersions) > 0,
+			Severity:       sevStr,
+			SeverityClass:  sevClass,
+			VulnID:         vulnID,
+			PackageName:    pkgName,
+			InstalledVer:   f.InstalledVersion,
+			FixState:       string(f.FixState),
+			FixedVersions:  fixedVerStr,
+			IsFixable:      len(f.FixedVersions) > 0,
+			Confidence:     f.Confidence,
+			ConfidenceStr:  fmt.Sprintf("%.2f", f.Confidence),
+			Sources:        sources,
+			IsSingleSource: f.IsSingleSource(),
+			IsDisputed:     f.IsDisputed(),
+			Conflicts:      conflictLines,
 		})
 	}
 
+	scanners := make([]string, 0, len(scannerSet))
+	for s := range scannerSet {
+		scanners = append(scanners, s)
+	}
+	sort.Strings(scanners)
+	engine := strings.Join(scanners, " + ")
+	if engine == "" {
+		engine = rep.ToolName
+	}
+	if engine == "" {
+		engine = "unknown"
+	}
+
 	data := DashboardData{
-		Scanner:    scanner,
-		SourceFile: sourcePath,
-		TotalCount: len(findings),
-		CritCount:  crit,
-		HighCount:  high,
-		MedCount:   med,
-		LowCount:   low,
-		UnkCount:   unk,
-		Findings:   viewItems,
+		Engine:            engine,
+		SourceFile:        rep.Target,
+		TotalCount:        len(findings),
+		CritCount:         crit,
+		HighCount:         high,
+		MedCount:          med,
+		LowCount:          low,
+		UnkCount:          unk,
+		Findings:          viewItems,
+		ShowConsolidation: rep.RawFindingCount > 0 && rep.RawFindingCount != len(findings),
+		RawCount:          rep.RawFindingCount,
+		Confirmed:         confirmed,
+		Disputed:          disputed,
+		SingleSource:      singleSource,
+		WithConflicts:     withConflicts,
 	}
 
 	tmpl, err := template.New("dashboard").Parse(dashboardHTML)
