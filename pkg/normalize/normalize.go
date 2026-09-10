@@ -37,6 +37,7 @@ func NewRegistry() *Registry {
 	r := &Registry{byFormat: map[string]Normalizer{}}
 	r.Register(TrivyNormalizer{})
 	r.Register(GrypeNormalizer{})
+	r.Register(OSVNormalizer{})
 	return r
 }
 
@@ -58,7 +59,8 @@ func (r *Registry) Normalize(raw model.RawResult) ([]model.Finding, error) {
 // normaliseSeverity maps a scanner's severity vocabulary onto the shared scale.
 //
 // Scanners write the same level differently — "Critical", "CRITICAL",
-// "critical" — and Grype adds "negligible" where Trivy does not. An
+// "critical" — and each adds terms the others do not: Grype has "negligible",
+// the GitHub Advisory Database that OSV aggregates uses "moderate". An
 // unrecognised value becomes SeverityUnknown rather than being guessed at,
 // since guessing would silently invent an assessment nobody made.
 func normaliseSeverity(s string) model.Severity {
