@@ -177,4 +177,3 @@ func cleanInstruction(raw string) string {
 	}
 	return raw
 }
-

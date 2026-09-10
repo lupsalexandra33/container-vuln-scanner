@@ -92,4 +92,3 @@ func TestProvenanceEcosystemFallback(t *testing.T) {
 		t.Errorf("expected layer index 2 for app package, got %d", origin.LayerIndex)
 	}
 }
-
