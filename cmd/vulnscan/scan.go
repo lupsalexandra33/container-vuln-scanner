@@ -14,6 +14,7 @@ import (
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/layers"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/normalize"
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/policy"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/scanner"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/trust"
 )
@@ -45,9 +46,9 @@ func capabilitiesFor(name string) scanner.Capabilities {
 		AcceptsSBOM: true,
 	}
 	if name == "grype" {
-		// Grype catalogues compiled binaries; Trivy does not. This is the
-		// difference that lets correlation tell a scanner that missed a finding
-		// from one that could not have seen it.
+		// Grype catalogues compiled binaries, which it emits as pkg:generic.
+		// Trivy does not. This is the difference that lets correlation tell a
+		// scanner that missed a finding from one that could not have seen it.
 		caps.Ecosystems = append(base, "generic")
 	}
 	return caps
@@ -58,11 +59,12 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 
 	var (
-		dir     = fs.String("from", "", "directory of recorded scanner output to correlate")
-		format  = fs.String("out", "table", "output format: table, json")
-		showAll = fs.Bool("all", false, "include findings only one scanner reported")
-		minConf = fs.Float64("min-confidence", 0, "hide findings below this confidence (0 to 1)")
-		explain = fs.Bool("explain-weights", false, "print the trust weight applied to each scanner and why")
+		dir        = fs.String("from", "", "directory of recorded scanner output to correlate")
+		format     = fs.String("out", "table", "output format: table, json")
+		showAll    = fs.Bool("all", false, "include findings only one scanner reported")
+		minConf    = fs.Float64("min-confidence", 0, "hide findings below this confidence (0 to 1)")
+		explain    = fs.Bool("explain-weights", false, "print the trust weight applied to each scanner and why")
+		policyName = fs.String("policy", "", "policy to apply: advisory, balanced, strict (default: none)")
 	)
 
 	fs.Usage = func() {
@@ -161,17 +163,41 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 
 	switch *format {
 	case "json":
-		return writeScanJSON(stdout, stderr, consolidated)
+		if code := writeScanJSON(stdout, stderr, consolidated); code != 0 {
+			return code
+		}
 	case "table":
 		writeScanTable(stdout, consolidated, participants, len(findings), *showAll, *minConf)
 		if *explain {
 			writeWeightExplanation(stdout, participants, consolidated, weights)
 		}
-		return 0
 	default:
 		fmt.Fprintf(stderr, "error: unknown output format %q\n", *format)
 		return 2
 	}
+
+	// A policy turns the report into a decision. Without one the command
+	// reports and exits zero: describing an image and gating on it are separate
+	// jobs, and a tool that silently starts failing builds because a default
+	// changed is worse than one that has to be asked.
+	if *policyName != "" {
+		p, ok := policy.ByName(*policyName)
+		if !ok {
+			fmt.Fprintf(stderr, "error: unknown policy %q (available: %s)\n",
+				*policyName, strings.Join(policy.Names(), ", "))
+			return 2
+		}
+		decision := p.Evaluate(consolidated)
+		fmt.Fprintln(stdout)
+		fmt.Fprint(stdout, decision.Explain())
+
+		// A policy failure and an execution failure must stay distinguishable:
+		// one means the image is unsafe, the other means the tool did not work.
+		// Conflating them either blocks builds on tool problems or ships images
+		// because the scanner crashed.
+		return decision.Outcome.ExitCode()
+	}
+	return 0
 }
 
 // discoverSources finds recorded scanner output in a directory, identifying the
