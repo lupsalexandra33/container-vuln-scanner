@@ -9,15 +9,22 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/correlate"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/layers"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/normalize"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/policy"
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/report"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/scanner"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/trust"
 )
+
+// toolVersion is reported to the TUI/web dashboard header. If the binary
+// already carries a real version (e.g. set via -ldflags in the release
+// build, or a var in main.go), wire that in here instead of this placeholder.
+const toolVersion = "dev"
 
 // scanSource pairs a scanner name with the format its output is in.
 type scanSource struct {
@@ -60,7 +67,7 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 
 	var (
 		dir        = fs.String("from", "", "directory of recorded scanner output to correlate")
-		format     = fs.String("out", "table", "output format: table, json")
+		format     = fs.String("out", "table", "output format: table, json, tui, web")
 		showAll    = fs.Bool("all", false, "include findings only one scanner reported")
 		minConf    = fs.Float64("min-confidence", 0, "hide findings below this confidence (0 to 1)")
 		explain    = fs.Bool("explain-weights", false, "print the trust weight applied to each scanner and why")
@@ -70,6 +77,10 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: vulnscan scan --from <directory> [flags]")
 		fmt.Fprintln(stderr, "\nCorrelates recorded output from several scanners for one image.")
+		fmt.Fprintln(stderr, "\n--out tui and --out web render the same correlated findings")
+		fmt.Fprintln(stderr, "interactively, with confidence and resolved conflicts included.")
+		fmt.Fprintln(stderr, "\nIf --policy is set, the exit code reflects the policy decision")
+		fmt.Fprintln(stderr, "against the correlated findings, regardless of --out.")
 		fmt.Fprintln(stderr, "\nFlags:")
 		fs.PrintDefaults()
 	}
@@ -161,6 +172,12 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	weights := trust.DefaultWeights()
 	consolidated := correlate.CorrelateWithProvenance(findings, participants, weights, prov)
 
+	// Every --out branch below produces its view of the same consolidated
+	// findings and, on success, falls through to policy evaluation rather
+	// than returning early: reporting and gating are separate jobs, and a
+	// --policy decision must apply the same way no matter how the findings
+	// were displayed. Only parse/usage errors (2) and render/encode failures
+	// (1) return from inside the switch.
 	switch *format {
 	case "json":
 		if code := writeScanJSON(stdout, stderr, consolidated); code != 0 {
@@ -170,6 +187,18 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		writeScanTable(stdout, consolidated, participants, len(findings), *showAll, *minConf)
 		if *explain {
 			writeWeightExplanation(stdout, participants, consolidated, weights)
+		}
+	case "tui":
+		rep := buildReport(*dir, consolidated, len(findings))
+		if err := report.RenderTUI(rep); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+	case "web":
+		rep := buildReport(*dir, consolidated, len(findings))
+		if err := report.ServeDashboard(rep); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
 		}
 	default:
 		fmt.Fprintf(stderr, "error: unknown output format %q\n", *format)
@@ -198,6 +227,22 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		return decision.Outcome.ExitCode()
 	}
 	return 0
+}
+
+// buildReport assembles the report.Report that TUI and web output share with
+// the JSON/SARIF exporters, so all four render the same correlated data
+// through the same shape rather than each inventing its own view of it.
+func buildReport(target string, consolidated []model.ConsolidatedFinding, rawCount int) report.Report {
+	rep := report.Report{
+		ToolName:        "vulnscan",
+		ToolVersion:     toolVersion,
+		Target:          target,
+		GeneratedAt:     time.Now(),
+		Findings:        consolidated,
+		RawFindingCount: rawCount,
+	}
+	rep.CalculateSummary()
+	return rep
 }
 
 // discoverSources finds recorded scanner output in a directory, identifying the

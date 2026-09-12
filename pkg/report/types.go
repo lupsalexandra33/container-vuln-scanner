@@ -14,6 +14,13 @@ type Report struct {
 	GeneratedAt time.Time                   `json:"generated_at"`
 	Summary     Summary                     `json:"summary"`
 	Findings    []model.ConsolidatedFinding `json:"findings"`
+
+	// RawFindingCount is how many findings scanners reported before
+	// correlation collapsed them into Findings. Zero means unknown (e.g. a
+	// Report built without this set) rather than "nothing was correlated" —
+	// callers that have the number should always set it, and displays should
+	// treat zero as absent, not as a claim that 0 raw findings existed.
+	RawFindingCount int `json:"raw_finding_count,omitempty"`
 }
 
 // Summary aggregates counts across severity, fixability, scanner consensus, and threat intel.
