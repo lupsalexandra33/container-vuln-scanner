@@ -23,3 +23,4 @@ When you start the Clair stack for the first time:
    curl -f http://localhost:6061/healthz
    ```
    The `docker-compose.yml` file includes a built-in healthcheck that runs this endpoint every 10 seconds.
+
