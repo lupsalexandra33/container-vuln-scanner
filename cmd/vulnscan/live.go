@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/normalize"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/orchestrator"
+	"github.com/lupsalexandra33/container-vuln-scanner/pkg/sbom"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/scanner"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/scanner/adapters"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/trust"
@@ -76,11 +78,26 @@ func scanLive(
 	}
 	fmt.Fprintf(stderr, "Scanning %s with %s...\n", image, strings.Join(names, ", "))
 	fmt.Fprintln(stderr, "The first run downloads the image and each scanner's vulnerability database,")
-	fmt.Fprintf(stderr, "which can take several minutes. Per-scanner timeout is %s.\n\n", timeout)
+	fmt.Fprintf(stderr, "which can take several minutes. Per-scanner timeout is %s.\n", timeout)
+
+	// Generate the SBOM once and let the scanners consume it, rather than each
+	// pulling and unpacking the image separately. Both adapters declare
+	// AcceptsSBOM, and on a cold run the image pull is most of the wall time.
+	//
+	// The generator is attached only when syft is present. It is an
+	// optimisation, not a requirement, and failing every scan because an
+	// optional tool is missing would be the wrong trade.
+	opts := []orchestrator.Option{orchestrator.WithScannerTimeout(timeout)}
+	if _, err := exec.LookPath("syft"); err == nil {
+		opts = append(opts, orchestrator.WithSBOMGenerator(sbom.NewSyftGenerator()))
+	} else {
+		fmt.Fprintln(stderr, "note: syft is not installed; each scanner will pull the image separately")
+	}
+	fmt.Fprintln(stderr)
 
 	target := model.Target{Reference: image}
 
-	orc := orchestrator.New(usable, orchestrator.WithScannerTimeout(timeout))
+	orc := orchestrator.New(usable, opts...)
 	session, err := orc.Run(ctx, target, orchestrator.RunOptions{
 		Classes: []model.FindingClass{model.ClassVulnerability},
 	})
@@ -121,7 +138,7 @@ func scanLive(
 	}
 
 	// Build the participant list from every scanner that was constructed, not
-	// from the results. The orchestrator omits scanners it filtered out during
+	// from the results. The orchestrator omits scanners it filters out during
 	// selection, so a scanner that was never selected would otherwise be
 	// indistinguishable from one that does not exist — and correlation needs to
 	// tell those apart to keep silence out of the confidence denominator.
