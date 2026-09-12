@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -40,11 +41,13 @@ var knownFormats = map[string]string{
 	"osv":   "osv-json",
 }
 
-// capabilitiesFor returns what a scanner declares it can detect.
+// capabilitiesFor returns what a scanner declares it can detect, for the
+// recorded path where no adapter is instantiated.
 //
-// These mirror the adapters in pkg/scanner/adapters. When the orchestrator
-// lands, capabilities come from the live Scanner instances instead — this is
-// the stand-in for reading recorded output, where no adapter is instantiated.
+// The live path does not use this: it reads Capabilities() from the scanner
+// instance itself, which is the authority on what it can do. This table is a
+// copy, and a copy drifts — it exists only because a JSON file on disk cannot
+// be asked.
 func capabilitiesFor(name string) scanner.Capabilities {
 	base := []string{"deb", "apk", "npm", "pypi", "gem", "cargo"}
 	caps := scanner.Capabilities{
@@ -72,11 +75,15 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		minConf    = fs.Float64("min-confidence", 0, "hide findings below this confidence (0 to 1)")
 		explain    = fs.Bool("explain-weights", false, "print the trust weight applied to each scanner and why")
 		policyName = fs.String("policy", "", "policy to apply: advisory, balanced, strict (default: none)")
+		timeout    = fs.Duration("timeout", 15*time.Minute, "per-scanner timeout when scanning a live image")
+		noProv     = fs.Bool("no-provenance", false, "omit the session provenance block on a live scan")
 	)
 
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: vulnscan scan --from <directory> [flags]")
-		fmt.Fprintln(stderr, "\nCorrelates recorded output from several scanners for one image.")
+		fmt.Fprintln(stderr, "usage: vulnscan scan <image> [flags]")
+		fmt.Fprintln(stderr, "       vulnscan scan --from <directory> [flags]")
+		fmt.Fprintln(stderr, "\nRuns the available scanners against an image and correlates what they")
+		fmt.Fprintln(stderr, "report, or correlates output already recorded on disk.")
 		fmt.Fprintln(stderr, "\n--out tui and --out web render the same correlated findings")
 		fmt.Fprintln(stderr, "interactively, with confidence and resolved conflicts included.")
 		fmt.Fprintln(stderr, "\nIf --policy is set, the exit code reflects the policy decision")
@@ -88,26 +95,141 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *dir == "" {
+
+	// Trust weights are resolved per ecosystem rather than per scanner. The
+	// same two tools agree on 91% of findings on a supported distribution and
+	// on none of them on one past end of life, so a single weight per scanner
+	// would encode a ranking the evidence does not support.
+	weights := trust.DefaultWeights()
+
+	var (
+		consolidated []model.ConsolidatedFinding
+		participants []correlate.Participant
+		rawCount     int
+		session      *model.ScanSession
+		target       string
+	)
+
+	// Two sources of scanner output, one pipeline after that. Live and recorded
+	// runs must go through identical correlation code, or the fixtures stop
+	// being a faithful stand-in for a real scan and every test built on them
+	// tests something the tool does not do.
+	switch {
+	case *dir != "":
+		res, code := scanRecorded(*dir, weights, stderr)
+		if code != 0 {
+			return code
+		}
+		consolidated, participants, rawCount = res.findings, res.participants, res.rawCount
+		target = *dir
+
+	case fs.NArg() == 1:
+		// The outer deadline is generous relative to the per-scanner timeout:
+		// scanners run concurrently, but pulling the image and populating a
+		// vulnerability database happen before any of them start.
+		ctx, cancel := context.WithTimeout(context.Background(), *timeout*3)
+		defer cancel()
+
+		res, err := scanLive(ctx, fs.Arg(0), weights, *timeout, stderr)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 2
+		}
+		consolidated, participants = res.Findings, res.Participants
+		rawCount, session = res.RawCount, res.Session
+		target = fs.Arg(0)
+
+	default:
 		fs.Usage()
 		return 2
 	}
 
-	sources, err := discoverSources(*dir)
-	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
-		return 2
-	}
-	if len(sources) == 0 {
-		fmt.Fprintf(stderr, "error: no recognised scanner output in %s\n", *dir)
-		fmt.Fprintln(stderr, "expected files named after the scanner, e.g. trivy.json, grype.json")
+	// Every --out branch below produces its view of the same consolidated
+	// findings and, on success, falls through to policy evaluation rather
+	// than returning early: reporting and gating are separate jobs, and a
+	// --policy decision must apply the same way no matter how the findings
+	// were displayed. Only parse/usage errors (2) and render/encode failures
+	// (1) return from inside the switch.
+	switch *format {
+	case "json":
+		if code := writeScanJSON(stdout, stderr, consolidated); code != 0 {
+			return code
+		}
+	case "table":
+		writeScanTable(stdout, consolidated, participants, rawCount, *showAll, *minConf)
+		if *explain {
+			writeWeightExplanation(stdout, participants, consolidated, weights)
+		}
+		if session != nil && !*noProv {
+			writeSessionProvenance(stdout, session)
+		}
+	case "tui":
+		rep := buildReport(target, consolidated, rawCount)
+		if err := report.RenderTUI(rep); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+	case "web":
+		rep := buildReport(target, consolidated, rawCount)
+		if err := report.ServeDashboard(rep); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+	default:
+		fmt.Fprintf(stderr, "error: unknown output format %q\n", *format)
 		return 2
 	}
 
-	// Attempt to load image layer provenance if an image config is present.
+	// A policy turns the report into a decision. Without one the command
+	// reports and exits zero: describing an image and gating on it are separate
+	// jobs, and a tool that silently starts failing builds because a default
+	// changed is worse than one that has to be asked.
+	if *policyName != "" {
+		p, ok := policy.ByName(*policyName)
+		if !ok {
+			fmt.Fprintf(stderr, "error: unknown policy %q (available: %s)\n",
+				*policyName, strings.Join(policy.Names(), ", "))
+			return 2
+		}
+		decision := p.Evaluate(consolidated)
+		fmt.Fprintln(stdout)
+		fmt.Fprint(stdout, decision.Explain())
+
+		// A policy failure and an execution failure must stay distinguishable:
+		// one means the image is unsafe, the other means the tool did not work.
+		// Conflating them either blocks builds on tool problems or ships images
+		// because the scanner crashed.
+		return decision.Outcome.ExitCode()
+	}
+	return 0
+}
+
+// recordedResult is what the fixture path produces, in the same shape as a live
+// scan so that both feed identical reporting and policy code.
+type recordedResult struct {
+	findings     []model.ConsolidatedFinding
+	participants []correlate.Participant
+	rawCount     int
+}
+
+// scanRecorded correlates scanner output already on disk.
+func scanRecorded(dir string, weights trust.Weights, stderr io.Writer) (*recordedResult, int) {
+	sources, err := discoverSources(dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return nil, 2
+	}
+	if len(sources) == 0 {
+		fmt.Fprintf(stderr, "error: no recognised scanner output in %s\n", dir)
+		fmt.Fprintln(stderr, "expected files named after the scanner, e.g. trivy.json, grype.json")
+		return nil, 2
+	}
+
+	// Layer provenance needs the image config, which is only present if someone
+	// recorded it alongside the scanner output.
 	var prov *layers.Provenance
 	for _, configName := range []string{"config.json", "manifest.json", "image.json"} {
-		if cfgData, err := os.ReadFile(filepath.Join(*dir, configName)); err == nil {
+		if cfgData, err := os.ReadFile(filepath.Join(dir, configName)); err == nil {
 			if p, err := layers.NewProvenance(cfgData); err == nil {
 				prov = p
 				break
@@ -165,68 +287,11 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		})
 	}
 
-	// Trust weights are resolved per ecosystem rather than per scanner. The
-	// same two tools agree on 91% of findings on a supported distribution and
-	// on none of them on one past end of life, so a single weight per scanner
-	// would encode a ranking the evidence does not support.
-	weights := trust.DefaultWeights()
-	consolidated := correlate.CorrelateWithProvenance(findings, participants, weights, prov)
-
-	// Every --out branch below produces its view of the same consolidated
-	// findings and, on success, falls through to policy evaluation rather
-	// than returning early: reporting and gating are separate jobs, and a
-	// --policy decision must apply the same way no matter how the findings
-	// were displayed. Only parse/usage errors (2) and render/encode failures
-	// (1) return from inside the switch.
-	switch *format {
-	case "json":
-		if code := writeScanJSON(stdout, stderr, consolidated); code != 0 {
-			return code
-		}
-	case "table":
-		writeScanTable(stdout, consolidated, participants, len(findings), *showAll, *minConf)
-		if *explain {
-			writeWeightExplanation(stdout, participants, consolidated, weights)
-		}
-	case "tui":
-		rep := buildReport(*dir, consolidated, len(findings))
-		if err := report.RenderTUI(rep); err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
-			return 1
-		}
-	case "web":
-		rep := buildReport(*dir, consolidated, len(findings))
-		if err := report.ServeDashboard(rep); err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
-			return 1
-		}
-	default:
-		fmt.Fprintf(stderr, "error: unknown output format %q\n", *format)
-		return 2
-	}
-
-	// A policy turns the report into a decision. Without one the command
-	// reports and exits zero: describing an image and gating on it are separate
-	// jobs, and a tool that silently starts failing builds because a default
-	// changed is worse than one that has to be asked.
-	if *policyName != "" {
-		p, ok := policy.ByName(*policyName)
-		if !ok {
-			fmt.Fprintf(stderr, "error: unknown policy %q (available: %s)\n",
-				*policyName, strings.Join(policy.Names(), ", "))
-			return 2
-		}
-		decision := p.Evaluate(consolidated)
-		fmt.Fprintln(stdout)
-		fmt.Fprint(stdout, decision.Explain())
-
-		// A policy failure and an execution failure must stay distinguishable:
-		// one means the image is unsafe, the other means the tool did not work.
-		// Conflating them either blocks builds on tool problems or ships images
-		// because the scanner crashed.
-		return decision.Outcome.ExitCode()
-	}
-	return 0
+	return &recordedResult{
+		findings:     correlate.CorrelateWithProvenance(findings, participants, weights, prov),
+		participants: participants,
+		rawCount:     len(findings),
+	}, 0
 }
 
 // buildReport assembles the report.Report that TUI and web output share with
@@ -355,7 +420,10 @@ func writeScanTable(
 			sources,
 		)
 
-		// Print layer origin attribution if resolved
+		// Layer origin is provenance, not a verdict: a later layer can overwrite
+		// or delete what an earlier one installed, so "the vulnerable package in
+		// the final image came from here" is supportable where "this layer is
+		// vulnerable" is not.
 		if f.Origin != nil && (f.Origin.Instruction != "" || f.Origin.LayerIndex >= 0 || f.Origin.LayerDigest != "") {
 			var desc string
 			if f.Origin.LayerIndex >= 0 {
