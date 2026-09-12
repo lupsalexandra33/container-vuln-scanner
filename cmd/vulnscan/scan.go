@@ -15,11 +15,8 @@ import (
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/layers"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/normalize"
-<<<<<<< HEAD
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/policy"
-=======
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/report"
->>>>>>> 39c323a (fixed formatting)
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/scanner"
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/trust"
 )
@@ -69,20 +66,12 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 
 	var (
-<<<<<<< HEAD
 		dir        = fs.String("from", "", "directory of recorded scanner output to correlate")
-		format     = fs.String("out", "table", "output format: table, json")
+		format     = fs.String("out", "table", "output format: table, json, tui, web")
 		showAll    = fs.Bool("all", false, "include findings only one scanner reported")
 		minConf    = fs.Float64("min-confidence", 0, "hide findings below this confidence (0 to 1)")
 		explain    = fs.Bool("explain-weights", false, "print the trust weight applied to each scanner and why")
 		policyName = fs.String("policy", "", "policy to apply: advisory, balanced, strict (default: none)")
-=======
-		dir     = fs.String("from", "", "directory of recorded scanner output to correlate")
-		format  = fs.String("out", "table", "output format: table, json, tui, web")
-		showAll = fs.Bool("all", false, "include findings only one scanner reported")
-		minConf = fs.Float64("min-confidence", 0, "hide findings below this confidence (0 to 1)")
-		explain = fs.Bool("explain-weights", false, "print the trust weight applied to each scanner and why")
->>>>>>> 39c323a (fixed formatting)
 	)
 
 	fs.Usage = func() {
@@ -90,6 +79,8 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "\nCorrelates recorded output from several scanners for one image.")
 		fmt.Fprintln(stderr, "\n--out tui and --out web render the same correlated findings")
 		fmt.Fprintln(stderr, "interactively, with confidence and resolved conflicts included.")
+		fmt.Fprintln(stderr, "\nIf --policy is set, the exit code reflects the policy decision")
+		fmt.Fprintln(stderr, "against the correlated findings, regardless of --out.")
 		fmt.Fprintln(stderr, "\nFlags:")
 		fs.PrintDefaults()
 	}
@@ -181,6 +172,12 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	weights := trust.DefaultWeights()
 	consolidated := correlate.CorrelateWithProvenance(findings, participants, weights, prov)
 
+	// Every --out branch below produces its view of the same consolidated
+	// findings and, on success, falls through to policy evaluation rather
+	// than returning early: reporting and gating are separate jobs, and a
+	// --policy decision must apply the same way no matter how the findings
+	// were displayed. Only parse/usage errors (2) and render/encode failures
+	// (1) return from inside the switch.
 	switch *format {
 	case "json":
 		if code := writeScanJSON(stdout, stderr, consolidated); code != 0 {
@@ -191,24 +188,18 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		if *explain {
 			writeWeightExplanation(stdout, participants, consolidated, weights)
 		}
-<<<<<<< HEAD
-=======
-		return 0
 	case "tui":
 		rep := buildReport(*dir, consolidated, len(findings))
 		if err := report.RenderTUI(rep); err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
-		return 0
 	case "web":
 		rep := buildReport(*dir, consolidated, len(findings))
 		if err := report.ServeDashboard(rep); err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
-		return 0
->>>>>>> 39c323a (fixed formatting)
 	default:
 		fmt.Fprintf(stderr, "error: unknown output format %q\n", *format)
 		return 2
