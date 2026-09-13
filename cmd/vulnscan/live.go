@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -65,8 +66,18 @@ func scanLive(
 	stderr io.Writer,
 ) (*liveResult, error) {
 	usable, unavailable := availableScanners(ctx)
-	for name, reason := range unavailable {
-		fmt.Fprintf(stderr, "warning: %s is unavailable and will be skipped: %s\n", name, reason)
+
+	// Sorted so the warnings, and the participant list built from the same map
+	// below, do not depend on map iteration order.
+	unavailableNames := make([]string, 0, len(unavailable))
+	for name := range unavailable {
+		unavailableNames = append(unavailableNames, name)
+	}
+	sort.Strings(unavailableNames)
+
+	for _, name := range unavailableNames {
+		fmt.Fprintf(stderr, "warning: %s is unavailable and will be skipped: %s\n",
+			name, unavailable[name])
 	}
 	if len(usable) == 0 {
 		return nil, fmt.Errorf("no scanners available — install trivy or grype, or use --from with recorded output")
@@ -82,7 +93,8 @@ func scanLive(
 
 	// Generate the SBOM once and let the scanners consume it, rather than each
 	// pulling and unpacking the image separately. Both adapters declare
-	// AcceptsSBOM, and on a cold run the image pull is most of the wall time.
+	// AcceptsSBOM, and on a cold run the image pull is most of the wall time —
+	// on alpine:3.14 this takes a scan from three minutes to five seconds.
 	//
 	// The generator is attached only when syft is present. It is an
 	// optimisation, not a requirement, and failing every scan because an
@@ -110,6 +122,11 @@ func scanLive(
 	var findings []model.Finding
 	byScanner := map[string]model.RawResult{}
 
+	// A scanner whose output we could not parse ran, but told us nothing we can
+	// use. RawResult.NoData is set before parsing, so it cannot express this on
+	// its own — tracked separately and folded in below.
+	normalizeFailed := map[string]bool{}
+
 	for _, raw := range session.Raw {
 		byScanner[raw.Scanner] = raw
 
@@ -129,9 +146,11 @@ func scanLive(
 		got, err := registry.Normalize(raw)
 		if err != nil {
 			fmt.Fprintf(stderr, "warning: cannot normalise %s output: %v\n", raw.Scanner, err)
-			// Normalising failed, so we have nothing from this scanner — but it
-			// did run, and saying otherwise would be a claim about the image
-			// rather than about our parser.
+			// The scanner ran, so Ran stays true. But leaving NoData false would
+			// make every finding another scanner reported look disputed against
+			// a scanner whose output we simply could not read — a claim about
+			// our parser dressed up as a claim about the image.
+			normalizeFailed[raw.Scanner] = true
 			continue
 		}
 		findings = append(findings, got...)
@@ -153,13 +172,13 @@ func scanLive(
 			// it can detect; a lookup table is a copy, and a copy drifts.
 			Capabilities: s.Capabilities(),
 			Ran:          ran && raw.Succeeded(),
-			NoData:       ran && raw.NoData,
+			NoData:       ran && (raw.NoData || normalizeFailed[s.Name()]),
 		})
 	}
 
 	// A scanner that could not run at all still belongs in the list. Its absence
 	// from the results is a fact about this machine, not about the image.
-	for name := range unavailable {
+	for _, name := range unavailableNames {
 		participants = append(participants, correlate.Participant{
 			Name:         name,
 			Capabilities: scanner.Capabilities{},
@@ -213,9 +232,17 @@ func writeSessionProvenance(w io.Writer, s *model.ScanSession) {
 	}
 
 	if failed := s.ScannersFailed(); len(failed) > 0 {
+		// Sorted for the same reason the participant list is: a report that
+		// reorders itself between runs cannot be diffed.
+		names := make([]string, 0, len(failed))
+		for name := range failed {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
 		fmt.Fprintln(w, "\n  failed scanners")
-		for name, reason := range failed {
-			fmt.Fprintf(w, "    %-9s %s\n", name, reason)
+		for _, name := range names {
+			fmt.Fprintf(w, "    %-9s %s\n", name, failed[name])
 		}
 		fmt.Fprintln(w, "  This is a partial result. A scanner that failed has said nothing,")
 		fmt.Fprintln(w, "  which is not the same as having found nothing.")

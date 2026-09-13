@@ -125,7 +125,7 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 
 	case fs.NArg() == 1:
 		// The outer deadline is generous relative to the per-scanner timeout:
-		// scanners run concurrently, but pulling the image and populating a
+		// scanners run concurrently, but generating the SBOM and populating a
 		// vulnerability database happen before any of them start.
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout*3)
 		defer cancel()
@@ -164,6 +164,10 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 			writeSessionProvenance(stdout, session)
 		}
 	case "tui":
+		// Known gap: report.Report has nowhere to carry tool versions, database
+		// timestamps or the end-of-life flag, so a live scan rendered here loses
+		// its provenance. That is the same "cannot explain a result" problem the
+		// live path otherwise addresses, and needs a field on report.Report.
 		rep := buildReport(target, consolidated, rawCount)
 		if err := report.RenderTUI(rep); err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
@@ -266,10 +270,15 @@ func scanRecorded(dir string, weights trust.Weights, stderr io.Writer) (*recorde
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "warning: cannot normalise %s: %v\n", src.path, err)
+			// Ran stays true: the file exists and the scanner produced it. What
+			// we could not do is read it, and treating that as "found nothing"
+			// would make every other scanner's findings look disputed against a
+			// parser failure of ours.
 			participants = append(participants, correlate.Participant{
 				Name:         src.scanner,
 				Capabilities: capabilitiesFor(src.scanner),
-				Ran:          false,
+				Ran:          true,
+				NoData:       true,
 			})
 			continue
 		}
