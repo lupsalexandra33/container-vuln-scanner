@@ -175,6 +175,18 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
+	case "sarif":
+		rep := buildReport(target, consolidated, rawCount)
+		if err := report.ExportSARIF(stdout, rep); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+	case "html":
+		rep := buildReport(target, consolidated, rawCount)
+		if err := report.ExportHTML(stdout, rep); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
 	default:
 		fmt.Fprintf(stderr, "error: unknown output format %q\n", *format)
 		return 2
