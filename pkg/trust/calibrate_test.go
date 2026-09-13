@@ -137,8 +137,86 @@ func TestUniqueFindingsAreCountedSeparately(t *testing.T) {
 	}
 }
 
+// TestNoAgreementIsNotWeakEvidence covers the apk and generic case: both
+// scanners are busy, neither corroborates the other, so the metrics are zero
+// without either scanner having been idle.
+//
+// SuggestedWeight returns a real number here, which is why checking its output
+// against zero is not a test for "no evidence" — HasEvidence is. Flagging these
+// rows would point the reader at exactly the ones the report then tells them to
+// disregard.
+func TestNoAgreementIsNotWeakEvidence(t *testing.T) {
+	// alpine:3.14 in miniature: trivy reports, grype reports, no overlap.
+	findings := []model.ConsolidatedFinding{
+		verdict(map[string]model.Participation{
+			"trivy": model.Reported,
+			"grype": model.RanAndMissed,
+		}, "apk"),
+		verdict(map[string]model.Participation{
+			"grype": model.Reported,
+			"trivy": model.RanAndMissed,
+		}, "apk"),
+	}
+
+	c := Measure(findings)
+
+	trivy, _ := metricFor(c, "trivy")
+	if trivy.Reported == 0 || trivy.Missed == 0 {
+		t.Fatalf("test setup: want both nonzero, got reported=%d missed=%d",
+			trivy.Reported, trivy.Missed)
+	}
+	if trivy.Agreed != 0 {
+		t.Fatalf("test setup: want no agreement, got %d", trivy.Agreed)
+	}
+
+	if trivy.HasEvidence() {
+		t.Error("a scanner corroborated on nothing has no evidence behind its metrics")
+	}
+
+	// The early return in SuggestedWeight does not fire here, so a caller
+	// cannot use its output to detect the absence of evidence.
+	if w := SuggestedWeight(trivy); w == 0 {
+		t.Error("SuggestedWeight returns a real number with no agreement; " +
+			"a caller checking it against zero would mistake this for evidence")
+	}
+
+	// The report must not flag these rows: the note printed beneath says the
+	// configured value should stand.
+	out := c.Report(DefaultWeights())
+	if contains(out, "<- differs") {
+		t.Errorf("rows with no agreement must not be flagged as differing:\n%s", out)
+	}
+}
+
+// TestFlagFiresOnRealDivergence is the other half: where agreement exists and
+// the measured behaviour is genuinely far from the configured weight, the flag
+// should appear.
+func TestFlagFiresOnRealDivergence(t *testing.T) {
+	// Two scanners agreeing on everything in an ecosystem whose configured
+	// weight is much lower than perfect agreement suggests.
+	findings := []model.ConsolidatedFinding{
+		verdict(map[string]model.Participation{
+			"trivy": model.Reported,
+			"grype": model.Reported,
+		}, "generic"),
+	}
+
+	c := Measure(findings)
+
+	grype, _ := metricFor(c, "grype")
+	if !grype.HasEvidence() {
+		t.Fatal("test setup: expected agreement")
+	}
+
+	// generic/grype is configured at 0.65; perfect agreement suggests 0.95.
+	out := c.Report(DefaultWeights())
+	if !contains(out, "<- differs") {
+		t.Errorf("a corroborated scanner far from its configured weight should be flagged:\n%s", out)
+	}
+}
+
 func TestSuggestedWeightIsCompressed(t *testing.T) {
-	// A perfect score must not suggest complete trust, and a zero score must not
+	// A perfect score must not suggest complete trust, and a poor one must not
 	// suggest removing a scanner. Consensus without ground truth cannot support
 	// either claim.
 	perfect := ScannerMetrics{Reported: 10, Agreed: 10, Missed: 0}
@@ -152,9 +230,9 @@ func TestSuggestedWeightIsCompressed(t *testing.T) {
 			"scanner from consideration", w)
 	}
 
-	none := ScannerMetrics{}
-	if w := SuggestedWeight(none); w != 0 {
-		t.Errorf("suggested weight = %v, want 0 with no evidence either way", w)
+	idle := ScannerMetrics{}
+	if w := SuggestedWeight(idle); w != 0 {
+		t.Errorf("suggested weight = %v, want 0 for a scanner that did nothing", w)
 	}
 }
 

@@ -65,7 +65,7 @@ func runCalibrate(args []string, stdout, stderr io.Writer) int {
 	for _, dir := range images {
 		name := filepath.Base(dir)
 
-		consolidated, err := consolidateDir(dir, weights)
+		consolidated, err := consolidateDir(dir, weights, stderr)
 		if err != nil {
 			fmt.Fprintf(stdout, "  %-18s skipped: %v\n", name, err)
 			continue
@@ -135,7 +135,7 @@ func imageDirs(root string) ([]string, error) {
 // It repeats what runScan does rather than sharing it, because runScan writes
 // to a writer and returns an exit code. Extracting the common part is worth
 // doing once a third caller appears.
-func consolidateDir(dir string, weights trust.Weights) ([]model.ConsolidatedFinding, error) {
+func consolidateDir(dir string, weights trust.Weights, stderr io.Writer) ([]model.ConsolidatedFinding, error) {
 	sources, err := discoverSources(dir)
 	if err != nil {
 		return nil, err
@@ -151,9 +151,12 @@ func consolidateDir(dir string, weights trust.Weights) ([]model.ConsolidatedFind
 	for _, src := range sources {
 		payload, err := os.ReadFile(src.path)
 		if err != nil {
-			// A scanner whose output cannot be read did not run, as far as
-			// correlation is concerned — its silence stays out of the
-			// confidence denominator.
+			// A source we cannot read is reported rather than silently dropped.
+			// This command exists to measure scanner reliability from recorded
+			// output, so a fixture that fails to load has to be visible or it
+			// skews the numbers without anyone noticing.
+			fmt.Fprintf(stderr, "warning: %s: cannot read %s: %v\n",
+				filepath.Base(dir), src.scanner, err)
 			participants = append(participants, correlate.Participant{
 				Name:         src.scanner,
 				Capabilities: capabilitiesFor(src.scanner),
@@ -168,6 +171,12 @@ func consolidateDir(dir string, weights trust.Weights) ([]model.ConsolidatedFind
 			Payload: payload,
 		})
 		if err != nil {
+			// A malformed fixture among several good ones would otherwise be
+			// indistinguishable from a file that legitimately does not exist.
+			// The per-image "skipped" line only fires when every source in a
+			// directory fails, so one bad fixture would give no signal at all.
+			fmt.Fprintf(stderr, "warning: %s: cannot normalise %s: %v\n",
+				filepath.Base(dir), src.scanner, err)
 			participants = append(participants, correlate.Participant{
 				Name:         src.scanner,
 				Capabilities: capabilitiesFor(src.scanner),

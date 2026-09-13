@@ -69,6 +69,15 @@ func (m ScannerMetrics) Precision() float64 {
 	return float64(m.Agreed) / float64(m.Reported)
 }
 
+// HasEvidence reports whether anything corroborated anything for this scanner.
+//
+// Without agreement, both metrics are zero and a weight derived from them
+// measures the absence of consensus rather than the behaviour of the scanner.
+// This is not the same as the scanner having been idle: on alpine:3.14 Trivy
+// reports 23 findings and Grype 167 with no overlap, so both are busy and
+// neither is corroborated.
+func (m ScannerMetrics) HasEvidence() bool { return m.Agreed > 0 }
+
 // Calibration is the result of measuring every scanner over a set of findings.
 type Calibration struct {
 	Overall      []ScannerMetrics
@@ -162,9 +171,14 @@ func Measure(findings []model.ConsolidatedFinding) Calibration {
 // The result is deliberately compressed into [0.5, 0.95]. Nothing measured here
 // justifies removing a scanner from consideration or trusting one completely,
 // and a raw score would imply a precision the method does not have.
+//
+// The zero return means the scanner was idle, not that it did badly. Callers
+// deciding whether the number means anything should check HasEvidence: a
+// scanner that reported plenty and was corroborated on none of it gets a real
+// number here, and that number is not evidence.
 func SuggestedWeight(m ScannerMetrics) float64 {
 	if m.Reported == 0 && m.Missed == 0 {
-		return 0 // no evidence either way
+		return 0 // idle: no evidence either way
 	}
 	score := (m.Coverage() + m.Precision()) / 2
 	return 0.5 + score*0.45
@@ -202,8 +216,13 @@ func (c Calibration) Report(current Weights) string {
 		for _, m := range c.ByEcosystem[eco] {
 			cur := current.For(m.Scanner, eco)
 			sug := SuggestedWeight(m)
+
+			// Flag only where something corroborated something. A suggested
+			// weight computed from zero agreement is not a weak signal but the
+			// absence of one, and flagging it would point the reader at exactly
+			// the rows the note below tells them to disregard.
 			flag := ""
-			if sug > 0 && absDiff(cur, sug) > 0.15 {
+			if m.HasEvidence() && absDiff(cur, sug) > 0.15 {
 				flag = "  <- differs"
 			}
 			fmt.Fprintf(&b, "  %-10s %9d %9d %8d %8.0f%% %8.0f%% %8.2f %10.2f%s\n",
