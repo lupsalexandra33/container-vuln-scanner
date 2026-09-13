@@ -23,6 +23,16 @@ var (
 	date    = "unknown"
 )
 
+type normalizeOptions struct {
+	filePath    string
+	scanner     string
+	format      string
+	outFormat   string
+	minSeverity string
+	failOn      string
+	outputFile  string
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printRootUsage(os.Stderr)
@@ -51,31 +61,33 @@ func main() {
 }
 
 func printRootUsage(w io.Writer) {
-	fmt.Fprintln(w, `vulnscan - Container vulnerability scanning & normalization CLI
+	usageText := `vulnscan - Multi-scanner container vulnerability correlation & triage engine
 
 Usage:
   vulnscan <command> [flags]
 
 Commands:
-  scan         Correlate and inspect findings across multiple scanners
-  normalize    Ingest and normalize raw scanner output into standard findings
-               (alias: inspect)
-  view         Open findings in interactive web dashboard
-  tui          Open findings in interactive terminal UI
-  version      Print version and build metadata
-  help         Show available commands and flags
+  scan        Correlate vulnerability findings across multiple scanners (live or recorded)
+  normalize   Ingest and normalize raw scanner outputs into standard findings (alias: inspect)
+  tui         Launch the interactive terminal UI for a scan or saved report
+  view        Launch the interactive web dashboard for a scan or saved report
+  calibrate   Evaluate cross-scanner agreement and calibrate per-ecosystem trust weights
+  version     Print version and build metadata
+  help        Show available commands and flags
 
-Use "vulnscan <command> --help" for more information about a command.`)
-}
+Examples:
+  # Scan recorded fixtures and launch interactive TUI:
+  vulnscan scan --from testdata/fixtures/debian_11 --out tui
 
-type normalizeOptions struct {
-	filePath    string
-	scanner     string
-	format      string
-	outFormat   string
-	minSeverity string
-	failOn      string
-	outputFile  string
+  # Run live multi-scanner scan against a container image:
+  vulnscan scan debian:11-slim
+
+  # Normalize a raw Grype/Trivy JSON file:
+  cat grype.json | vulnscan normalize --format table
+
+Use "vulnscan <command> --help" for detailed documentation on a specific command.
+`
+	fmt.Fprint(w, usageText)
 }
 
 func runNormalize(args []string, inReader io.Reader, outWriter, errWriter io.Writer) int {
@@ -126,10 +138,6 @@ Flags:`)
 
 	fromStdin := opts.filePath == "-"
 
-	// Auto-detect scanner and format from the filename when omitted. This is
-	// only possible for a real file path — stdin has no filename to infer
-	// from, so that case is rejected explicitly below rather than silently
-	// falling through to the same generic error.
 	if !fromStdin && (opts.scanner == "" || opts.format == "") {
 		detectedScanner, detectedFormat := inferScanner(opts.filePath)
 		if opts.scanner == "" {
@@ -166,7 +174,6 @@ Flags:`)
 		}
 	}
 
-	// 1. Read payload from file or stdin.
 	var data []byte
 	if fromStdin {
 		data, err = io.ReadAll(inReader)
@@ -178,7 +185,6 @@ Flags:`)
 		return 1
 	}
 
-	// 2. Normalize.
 	registry := normalize.NewRegistry()
 	findings, err := registry.Normalize(model.RawResult{
 		Scanner: opts.scanner,
@@ -190,7 +196,6 @@ Flags:`)
 		return 1
 	}
 
-	// 3. Filter findings.
 	filtered := make([]model.Finding, 0, len(findings))
 	for _, f := range findings {
 		if meetsThreshold(f.PrimarySeverity(), minSev) {
@@ -198,7 +203,6 @@ Flags:`)
 		}
 	}
 
-	// 4. Output destination.
 	dest := outWriter
 	if opts.outputFile != "" {
 		file, err := os.Create(opts.outputFile)
@@ -210,13 +214,9 @@ Flags:`)
 		dest = file
 	}
 
-	// 5. Render.
 	var renderErr error
 	switch strings.ToLower(opts.outFormat) {
 	case "tui":
-		// normalize has no correlation step — one scanner, one file. Wrap it
-		// as a Report so it renders through the same TUI as `scan --out tui`,
-		// but honestly: single source, no confidence derivation, no conflicts.
 		renderErr = report.RenderTUI(report.SingleScannerReport(filtered, opts.scanner, opts.filePath))
 	case "web", "ui":
 		renderErr = report.ServeDashboard(report.SingleScannerReport(filtered, opts.scanner, opts.filePath))
@@ -236,7 +236,6 @@ Flags:`)
 		return 1
 	}
 
-	// 6. Threshold / CI enforcement.
 	if failEnabled {
 		violations := 0
 		for _, f := range filtered {
