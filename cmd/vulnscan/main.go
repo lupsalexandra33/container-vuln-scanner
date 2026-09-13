@@ -43,6 +43,9 @@ func main() {
 		printRootUsage(os.Stdout)
 		os.Exit(0)
 
+	case "calibrate":
+		os.Exit(runCalibrate(os.Args[2:], os.Stdout, os.Stderr))
+
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		printRootUsage(os.Stderr)
