@@ -29,22 +29,27 @@ func main() {
 		os.Exit(2)
 	}
 
+	args := hoistFlags(os.Args[2:])
+
 	switch os.Args[1] {
 	case "version":
 		fmt.Printf("vulnscan %s (commit: %s, built: %s)\n", version, commit, date)
 
 	case "scan":
-		os.Exit(runScan(os.Args[2:], os.Stdout, os.Stderr))
+		os.Exit(runScan(args, os.Stdout, os.Stderr))
 
 	case "normalize", "inspect", "view", "tui":
-		os.Exit(runNormalize(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+		os.Exit(runNormalize(args, os.Stdin, os.Stdout, os.Stderr))
 
 	case "help", "-h", "--help":
 		printRootUsage(os.Stdout)
 		os.Exit(0)
 
 	case "calibrate":
-		os.Exit(runCalibrate(os.Args[2:], os.Stdout, os.Stderr))
+		os.Exit(runCalibrate(args, os.Stdout, os.Stderr))
+
+	case "replay":
+		os.Exit(runReplay(args, os.Stdout, os.Stderr))
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
@@ -349,4 +354,57 @@ func renderMarkdown(w io.Writer, findings []model.Finding, scannerName, path str
 			f.PrimarySeverity(), id, f.PackageName, f.InstalledVersion, f.FixState, fixed)
 	}
 	return nil
+}
+
+// hoistFlags moves positional arguments after the flags.
+//
+// Go's flag package stops parsing at the first argument that does not begin
+// with a dash, so `scan alpine:3.14 --policy balanced` silently drops the
+// policy: the image is parsed, and everything after it is left in Args(). That
+// is the order most people write, and a flag quietly ignored is worse than one
+// that errors.
+//
+// The rearrangement is conservative. A flag is assumed to take its value from
+// the next argument unless it was written as --flag=value or appears in
+// isBoolFlag, which is the one place this needs keeping in step with the
+// commands.
+func hoistFlags(args []string) []string {
+	var flags, positional []string
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			// A bare "-" means stdin, which is a value rather than a flag.
+			positional = append(positional, a)
+			continue
+		}
+
+		flags = append(flags, a)
+
+		if strings.Contains(a, "=") || isBoolFlag(a) {
+			continue
+		}
+		// The value follows, unless the next argument is itself a flag.
+		if i+1 < len(args) && (args[i+1] == "-" || !strings.HasPrefix(args[i+1], "-")) {
+			flags = append(flags, args[i+1])
+			i++
+		}
+	}
+
+	return append(flags, positional...)
+}
+
+// isBoolFlag lists the flags that take no value, so that a positional argument
+// following one is not swallowed as if it were that flag's value.
+//
+// Keeping this in step with the commands is the cost of rearranging arguments
+// at all. It is small against a flag being silently dropped, but it is real: a
+// new boolean flag left out of this list breaks the argument after it.
+func isBoolFlag(flag string) bool {
+	switch strings.TrimLeft(flag, "-") {
+	case "all", "explain-weights", "no-provenance", "per-image", "h", "help":
+		return true
+	}
+	return false
 }
