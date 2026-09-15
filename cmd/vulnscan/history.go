@@ -39,7 +39,7 @@ func runHistory(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	sessions, err := discoverSessions(*dir, stderr)
+	sessions, err := discoverSessions(*dir)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
@@ -91,11 +91,13 @@ type sessionEntry struct {
 
 // discoverSessions finds every valid session file directly under dir.
 //
-// A file that is not a session — wrong version, corrupt, unrelated JSON — is
-// skipped with a warning rather than failing history outright. One bad file
-// should not hide every good one; history is a directory listing, not a
-// validator.
-func discoverSessions(dir string, stderr io.Writer) ([]sessionEntry, error) {
+// A file that is not a session — wrong version, corrupt, or unrelated JSON —
+// is skipped silently rather than failing history outright. Most files in a
+// directory of interest will not be sessions at all (results.json, sbom.json,
+// and so on), so treating every non-session file as warning-worthy would make
+// the normal case noisy. One bad or unrelated file should not hide every good
+// one; history is a directory listing, not a validator.
+func discoverSessions(dir string) ([]sessionEntry, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -109,9 +111,6 @@ func discoverSessions(dir string, stderr io.Writer) ([]sessionEntry, error) {
 		path := filepath.Join(dir, e.Name())
 		s, err := loadSession(path)
 		if err != nil {
-			// Most files in a directory of interest will not be session
-			// files at all (results.json, sbom.json, ...). That is normal,
-			// not a warning-worthy event, so it stays silent here.
 			continue
 		}
 		sessions = append(sessions, sessionEntry{path: path, session: s})
