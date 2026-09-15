@@ -62,4 +62,3 @@ func TestDiffErrorsOnMissingFile(t *testing.T) {
 		t.Fatalf("expected exit code 2 for a missing file, got %d", code)
 	}
 }
-

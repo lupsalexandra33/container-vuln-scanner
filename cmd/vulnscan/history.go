@@ -118,4 +118,3 @@ func discoverSessions(dir string, stderr io.Writer) ([]sessionEntry, error) {
 	}
 	return sessions, nil
 }
-

@@ -420,4 +420,3 @@ func isBoolFlag(flag string) bool {
 	}
 	return false
 }
-

@@ -93,4 +93,3 @@ func runDiff(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, "entry, a fix that landed, or a rating that moved — not a bug in this tool.")
 	return 0
 }
-

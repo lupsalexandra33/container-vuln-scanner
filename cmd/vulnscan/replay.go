@@ -263,4 +263,3 @@ func absFloat(f float64) float64 {
 	}
 	return f
 }
-
