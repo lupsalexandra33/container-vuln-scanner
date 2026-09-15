@@ -77,6 +77,7 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 		policyName = fs.String("policy", "", "policy to apply: advisory, balanced, strict (default: none)")
 		timeout    = fs.Duration("timeout", 15*time.Minute, "per-scanner timeout when scanning a live image")
 		noProv     = fs.Bool("no-provenance", false, "omit the session provenance block on a live scan")
+		save       = fs.String("save", "", "write the scan session to a file for later replay")
 	)
 
 	fs.Usage = func() {
@@ -142,6 +143,22 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	default:
 		fs.Usage()
 		return 2
+	}
+
+	// A stored session holds the raw scanner output, not the conclusions. That
+	// is what lets correlation be re-run later and compared: the inputs are
+	// fixed, so any difference is a change in this tool rather than in the
+	// image or the vulnerability data.
+	if *save != "" {
+		if session == nil {
+			fmt.Fprintln(stderr, "error: --save needs a live scan; recorded output is already on disk")
+			return 2
+		}
+		if err := saveSession(*save, session); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stderr, "session written to %s\n", *save)
 	}
 
 	// Every --out branch below produces its view of the same consolidated
