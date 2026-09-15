@@ -197,8 +197,20 @@ func findingKey(f model.ConsolidatedFinding) string {
 	return f.Vulnerability.PreferredID().ID + "|" + f.Package.Canonical()
 }
 
-// compareFindings reports how two sets of consolidated findings differ.
+// compareFindings reports how two sets of consolidated findings differ, using
+// the wording verify's caller expects: a missing finding is "missing from
+// replay" and a new one is "new in replay," since neither should happen when
+// the raw scanner output is held fixed.
 func compareFindings(stored, replayed []model.ConsolidatedFinding) []string {
+	return compareFindingSets(stored, replayed, "missing from replay", "new in replay")
+}
+
+// compareFindingSets reports how two sets of consolidated findings differ.
+// removedLabel and addedLabel let a caller phrase what "gone" and "new" mean
+// for its situation: verify is checking for a bug and calls them "missing
+// from replay"/"new in replay"; diff.go is checking for real change over time
+// and calls them "resolved"/"new".
+func compareFindingSets(a, b []model.ConsolidatedFinding, removedLabel, addedLabel string) []string {
 	byKey := func(fs []model.ConsolidatedFinding) map[string]model.ConsolidatedFinding {
 		m := make(map[string]model.ConsolidatedFinding, len(fs))
 		for _, f := range fs {
@@ -207,13 +219,13 @@ func compareFindings(stored, replayed []model.ConsolidatedFinding) []string {
 		return m
 	}
 
-	a, b := byKey(stored), byKey(replayed)
+	am, bm := byKey(a), byKey(b)
 	var diffs []string
 
-	for key, s := range a {
-		r, present := b[key]
+	for key, s := range am {
+		r, present := bm[key]
 		if !present {
-			diffs = append(diffs, fmt.Sprintf("missing from replay: %s", key))
+			diffs = append(diffs, fmt.Sprintf("%s: %s", removedLabel, key))
 			continue
 		}
 		if s.Severity != r.Severity {
@@ -232,14 +244,15 @@ func compareFindings(stored, replayed []model.ConsolidatedFinding) []string {
 		}
 	}
 
-	for key := range b {
-		if _, present := a[key]; !present {
-			diffs = append(diffs, fmt.Sprintf("new in replay: %s", key))
+	for key := range bm {
+		if _, present := am[key]; !present {
+			diffs = append(diffs, fmt.Sprintf("%s: %s", addedLabel, key))
 		}
 	}
 
 	// Sorted so that running the comparison twice on the same inputs produces
-	// the same report — the property this command exists to demonstrate.
+	// the same report — the property verify exists to demonstrate, and diff
+	// should keep for the same reason.
 	sort.Strings(diffs)
 	return diffs
 }
