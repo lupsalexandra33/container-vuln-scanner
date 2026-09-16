@@ -3,6 +3,7 @@ package normalize
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
 )
@@ -22,6 +23,11 @@ func (n ScoutNormalizer) Normalize(raw model.RawResult) ([]model.Finding, error)
 				Message struct {
 					Text string `json:"text"`
 				} `json:"message"`
+				Locations []struct {
+					LogicalLocations []struct {
+						Name string `json:"name"`
+					} `json:"logicalLocations"`
+				} `json:"locations"`
 			} `json:"results"`
 		} `json:"runs"`
 	}
@@ -49,12 +55,27 @@ func (n ScoutNormalizer) Normalize(raw model.RawResult) ([]model.Finding, error)
 				vid = model.VulnID{Scheme: model.SchemeUnknown, ID: res.RuleID}
 			}
 
+			var pkg model.PURL
+			var pkgName, installedVersion string
+			purlMatch := regexp.MustCompile(`(?i)Package\s*:\s*(pkg:[^\s]+)`).FindStringSubmatch(res.Message.Text)
+			if len(purlMatch) > 1 {
+				purlString := purlMatch[1]
+				if parsed, err := model.ParsePURL(purlString); err == nil {
+					pkg = parsed
+					pkgName = parsed.Name
+					installedVersion = parsed.Version
+				}
+			}
+
 			findings = append(findings, model.Finding{
 				Class:   model.ClassVulnerability,
 				Scanner: "scout",
 				Vulnerability: model.VulnRef{
 					Primary: vid,
 				},
+				Package:          pkg,
+				PackageName:      pkgName,
+				InstalledVersion: installedVersion,
 				Severities: []model.SeverityRating{
 					{
 						Severity: severity,
