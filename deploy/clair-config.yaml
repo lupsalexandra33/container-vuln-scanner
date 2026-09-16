@@ -1,5 +1,5 @@
 http_listen_addr: :6060
-intro_api_listen_addr: :6061
+introspection_addr: :6061
 log_level: info
 indexer:
   connstring: host=clair-db port=5432 user=clair password=clairpassword dbname=clair sslmode=disable
