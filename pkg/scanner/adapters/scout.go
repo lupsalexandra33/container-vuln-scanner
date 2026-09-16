@@ -97,7 +97,11 @@ func (s *ScoutAdapter) Scan(ctx context.Context, target model.Target) (model.Raw
 
 		// For authentication errors or other failures, return them cleanly
 		// so the orchestrator isolates the failure without crashing the whole run.
-		return model.RawResult{}, fmt.Errorf("docker scout failed (exit %d): %s", res.ExitCode, strings.TrimSpace(string(res.Stderr)))
+		errOut := strings.TrimSpace(string(res.Stderr))
+		if errOut == "" {
+			errOut = strings.TrimSpace(string(res.Stdout))
+		}
+		return model.RawResult{}, fmt.Errorf("docker scout failed (exit %d): %s", res.ExitCode, errOut)
 	}
 
 	return model.RawResult{}, fmt.Errorf("docker scout failed after %d attempts due to rate limiting or quota exhaustion", maxRetries)
