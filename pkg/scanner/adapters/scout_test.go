@@ -54,8 +54,8 @@ func TestScoutAdapter_RateLimitBackoff(t *testing.T) {
 		t.Errorf("Expected 3 calls due to retries, got %d", callCount)
 	}
 
-	if res.Format != "scout-json" {
-		t.Errorf("Expected scout-json format, got %s", res.Format)
+	if res.Format != "scout-sarif" {
+		t.Errorf("Expected scout-sarif format, got %s", res.Format)
 	}
 
 	elapsed := time.Since(start)

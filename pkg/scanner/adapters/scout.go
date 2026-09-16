@@ -65,7 +65,7 @@ func (s *ScoutAdapter) Scan(ctx context.Context, target model.Target) (model.Raw
 		// Execute Docker Scout for CVEs with JSON output.
 		// Note: Authentication relies on the host's Docker credentials. By shelling out via
 		// RunTool, we keep secrets entirely out of logs and our code.
-		res, err := scanner.RunTool(ctx, "", "docker", "scout", "cves", "--format", "json", target.Reference)
+		res, err := scanner.RunTool(ctx, "", "docker", "scout", "cves", "--format", "sarif", target.Reference)
 		if err != nil {
 			return model.RawResult{}, err
 		}
@@ -73,7 +73,7 @@ func (s *ScoutAdapter) Scan(ctx context.Context, target model.Target) (model.Raw
 		if res.ExitCode == 0 {
 			return model.RawResult{
 				Payload: res.Stdout,
-				Format:  "scout-json",
+				Format:  "scout-sarif",
 			}, nil
 		}
 
