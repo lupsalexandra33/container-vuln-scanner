@@ -61,6 +61,12 @@ func main() {
 	case "replay":
 		os.Exit(runReplay(args, os.Stdout, os.Stderr))
 
+	case "history":
+		os.Exit(runHistory(args, os.Stdout, os.Stderr))
+
+	case "diff":
+		os.Exit(runDiff(args, os.Stdout, os.Stderr))
+
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		printRootUsage(os.Stderr)
@@ -80,6 +86,9 @@ Commands:
   tui         Launch the interactive terminal UI for a scan or saved report
   view        Launch the interactive web dashboard for a scan or saved report
   calibrate   Evaluate cross-scanner agreement and calibrate per-ecosystem trust weights
+  replay      Re-derive findings from a saved session without running any scanner
+  history     List saved scan sessions, most recent first
+  diff        Compare two saved sessions and report what changed between them
   version     Print version and build metadata
   help        Show available commands and flags
 
@@ -88,10 +97,14 @@ Examples:
   vulnscan scan --from testdata/fixtures/debian_11 --out tui
 
   # Run live multi-scanner scan against a container image:
-  vulnscan scan debian:11-slim
+  vulnscan scan debian:11-slim --save run.session
 
   # Normalize a raw Grype/Trivy JSON file:
   cat grype.json | vulnscan normalize --format table
+
+  # List and compare saved sessions:
+  vulnscan history --from .
+  vulnscan diff old.session new.session
 
 Use "vulnscan <command> --help" for detailed documentation on a specific command.
 `
