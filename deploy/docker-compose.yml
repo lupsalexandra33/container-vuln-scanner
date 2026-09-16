@@ -19,9 +19,7 @@ services:
     ports:
       - "6060:6060" # HTTP API
       - "6061:6061" # Metrics/Health
-    environment:
-      CLAIR_CONF: /clair-config.yaml
-      CLAIR_MODE: combo
+    command: ["-conf", "/clair-config.yaml", "-mode", "combo"]
     volumes:
       - ./clair-config.yaml:/clair-config.yaml:ro
     healthcheck:
