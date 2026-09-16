@@ -116,3 +116,11 @@ Once running, `vulnscan scan <image>` automatically detects the service at `http
 ```bash
 CLAIR_URL=http://your-clair:6060 ./bin/vulnscan scan debian:11-slim
 ```
+
+### Using Commercial Scanners (Docker Scout)
+
+Docker Scout runs seamlessly alongside the open-source engines and is automatically included in live scans if available. It does not require any additional environment variables like `CLAIR_URL` because it safely delegates all authentication to your host's Docker credentials.
+
+To ensure it participates in a live scan:
+1. Ensure the Docker Scout CLI plugin is installed (`docker scout version`).
+2. Ensure your terminal is authenticated to Docker Hub (`docker login`).
