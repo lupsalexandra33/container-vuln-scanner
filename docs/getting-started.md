@@ -100,4 +100,19 @@ When a container engine (Docker or Podman) and scanner binaries are present in y
 ./bin/vulnscan scan debian:11-slim --out tui
 ```
 
-`vulnscan` will dynamically query installed scanner adapters, execute them concurrently, attribute findings to container layers, enrich CVEs with exploit intelligence (EPSS/KEV), and render the unified result.
+`vulnscan` will dynamically query installed scanner adapters (like `trivy` and `grype`), execute them concurrently, attribute findings to container layers, enrich CVEs with exploit intelligence (EPSS/KEV), and render the unified result.
+
+### Using Service-based Scanners (Clair)
+
+Service-based scanners like Clair can be included automatically in live scans by starting the provided compose stack first:
+
+```bash
+cd deploy
+docker-compose up -d
+```
+
+Once running, `vulnscan scan <image>` automatically detects the service at `http://localhost:6060`. If your Clair instance runs elsewhere, you can configure it via the `CLAIR_URL` environment variable:
+
+```bash
+CLAIR_URL=http://your-clair:6060 ./bin/vulnscan scan debian:11-slim
+```

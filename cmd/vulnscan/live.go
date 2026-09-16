@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -35,9 +36,15 @@ type liveResult struct {
 // installed" and "trivy found nothing" are different facts, and a report that
 // conflates them claims an image is cleaner than the evidence supports.
 func availableScanners(ctx context.Context) (usable []scanner.Scanner, unavailable map[string]string) {
+	clairURL := os.Getenv("CLAIR_URL")
+	if clairURL == "" {
+		clairURL = "http://localhost:6060"
+	}
+
 	all := []scanner.Scanner{
 		adapters.NewTrivyAdapter(),
 		adapters.NewGrypeAdapter(),
+		adapters.NewClairAdapter(clairURL),
 	}
 
 	unavailable = map[string]string{}
