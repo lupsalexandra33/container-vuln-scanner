@@ -54,6 +54,21 @@ func (s *ScoutAdapter) Available(ctx context.Context) error {
 	if err != nil || res.ExitCode != 0 {
 		return fmt.Errorf("docker scout plugin not available: %s", strings.TrimSpace(string(res.Stderr)))
 	}
+
+	// Check auth by attempting a dummy scan on 'scratch'.
+	// This will fail regardless, but the *reason* it fails tells us if we are logged in.
+	authRes, _ := scanner.RunTool(ctx, "", "docker", "scout", "cves", "scratch")
+	out := strings.ToLower(string(authRes.Stdout) + string(authRes.Stderr))
+
+	if strings.Contains(out, "log in with your docker id") {
+		errOut := strings.TrimSpace(string(authRes.Stderr))
+		if errOut == "" {
+			errOut = strings.TrimSpace(string(authRes.Stdout))
+		}
+		return fmt.Errorf("docker scout failed (exit %d): %s", authRes.ExitCode, errOut)
+	}
+
+	// If the error was something like "Pull failed", it means we ARE authenticated!
 	return nil
 }
 

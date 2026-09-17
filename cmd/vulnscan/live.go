@@ -84,8 +84,7 @@ func scanLive(
 	sort.Strings(unavailableNames)
 
 	for _, name := range unavailableNames {
-		fmt.Fprintf(stderr, "warning: %s is unavailable and will be skipped: %s\n",
-			name, unavailable[name])
+		fmt.Fprintf(stderr, "warning: %s is unavailable and will be skipped\n", name)
 	}
 	if len(usable) == 0 {
 		return nil, fmt.Errorf("no scanners available — install trivy or grype, or use --from with recorded output")
@@ -194,6 +193,15 @@ func scanLive(
 		})
 	}
 
+	// Inject unavailable scanners into the session as failed raw results
+	// so their detailed errors appear in the session summary at the bottom.
+	for name, errStr := range unavailable {
+		session.Raw = append(session.Raw, model.RawResult{
+			Scanner: name,
+			Err:     errStr,
+		})
+	}
+
 	return &liveResult{
 		Findings:     correlate.CorrelateWith(findings, participants, weights),
 		Participants: participants,
@@ -252,7 +260,6 @@ func writeSessionProvenance(w io.Writer, s *model.ScanSession) {
 		for _, name := range names {
 			fmt.Fprintf(w, "    %-9s %s\n", name, failed[name])
 		}
-		fmt.Fprintln(w, "  This is a partial result. A scanner that failed has said nothing,")
-		fmt.Fprintln(w, "  which is not the same as having found nothing.")
+
 	}
 }
