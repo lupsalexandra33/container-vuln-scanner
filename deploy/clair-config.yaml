@@ -4,7 +4,7 @@ log_level: info
 indexer:
   connstring: host=clair-db port=5432 user=clair password=clairpassword dbname=clair sslmode=disable
   scanlock_retry: 10
-  layer_scan_concurrency: 5
+  layer_scan_concurrency: 2
   migrations: true
 matcher:
   connstring: host=clair-db port=5432 user=clair password=clairpassword dbname=clair sslmode=disable
@@ -18,8 +18,3 @@ updaters:
     - debian
     - ubuntu
     - alpine
-    - rhel
-    - suse
-    - oracle
-    - amazon
-

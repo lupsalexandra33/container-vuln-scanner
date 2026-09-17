@@ -13,6 +13,13 @@ services:
 
   clair:
     image: quay.io/projectquay/clair:4.7.4
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 2G
     depends_on:
       clair-db:
         condition: service_healthy
