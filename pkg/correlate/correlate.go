@@ -165,6 +165,9 @@ func correlationKey(f model.Finding, canonical map[string]model.VulnID) string {
 		return "uncorrelatable|" + f.Scanner + "|" +
 			f.Vulnerability.Primary.ID + "|" + f.PackageName + "|" + f.InstalledVersion
 	}
+	if f.Class == model.ClassMisconfiguration || f.Class == model.ClassSecret {
+		return string(f.Class) + "|" + f.Vulnerability.Primary.ID + "|" + f.Location
+	}
 	id := f.Vulnerability.PreferredID()
 	if c, ok := canonical[id.ID]; ok {
 		id = c

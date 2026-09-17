@@ -48,7 +48,7 @@ func (t *TrivyAdapter) Version(ctx context.Context) (model.ToolVersion, error) {
 
 func (t *TrivyAdapter) Capabilities() scanner.Capabilities {
 	return scanner.Capabilities{
-		Classes:             []model.FindingClass{model.ClassVulnerability},
+		Classes:             []model.FindingClass{model.ClassVulnerability, model.ClassMisconfiguration, model.ClassSecret},
 		Ecosystems:          []string{"deb", "apk", "npm", "pypi", "gem", "cargo"},
 		AcceptsSBOM:         true,
 		RequiresNetwork:     false,
@@ -63,13 +63,36 @@ func (t *TrivyAdapter) Available(ctx context.Context) error {
 
 func (t *TrivyAdapter) Scan(ctx context.Context, target model.Target) (model.RawResult, error) {
 	start := time.Now()
-	var args []string
+
 	if target.SBOMPath != "" {
-		args = []string{"sbom", "--scanners", "vuln", "--format", "json", "--quiet", target.SBOMPath}
-	} else {
-		args = []string{"image", "--scanners", "vuln", "--format", "json", "--quiet", target.Reference}
+		// Hybrid Scan
+		res1, err := scanner.RunTool(ctx, "", "trivy", "sbom", "--scanners", "vuln", "--format", "json", "--quiet", target.SBOMPath)
+		if err != nil {
+			return model.RawResult{}, err
+		}
+
+		res2, err := scanner.RunTool(ctx, "", "trivy", "image", "--scanners", "misconfig,secret", "--image-config-scanners", "misconfig,secret", "--format", "json", "--quiet", target.Reference)
+		if err != nil {
+			return model.RawResult{}, err
+		}
+
+		mergedPayload, err := mergeTrivyJSON(res1.Stdout, res2.Stdout)
+		if err != nil {
+			return model.RawResult{}, err
+		}
+
+		return model.RawResult{
+			Scanner:  t.Name(),
+			Target:   target,
+			Payload:  mergedPayload,
+			Format:   "trivy-json",
+			Started:  start,
+			Duration: time.Since(start),
+			NoData:   checkNoData(mergedPayload),
+		}, nil
 	}
 
+	args := []string{"image", "--scanners", "vuln,misconfig,secret", "--image-config-scanners", "misconfig,secret", "--format", "json", "--quiet", target.Reference}
 	res, err := scanner.RunTool(ctx, "", "trivy", args...)
 	if err != nil {
 		return model.RawResult{}, err
@@ -78,6 +101,21 @@ func (t *TrivyAdapter) Scan(ctx context.Context, target model.Target) (model.Raw
 		return model.RawResult{}, fmt.Errorf("trivy scan failed (exit code %d): %s", res.ExitCode, string(res.Stderr))
 	}
 
+	return model.RawResult{
+		Scanner:  t.Name(),
+		Target:   target,
+		Payload:  res.Stdout,
+		Format:   "trivy-json",
+		Started:  start,
+		Duration: time.Since(start),
+		NoData:   checkNoData(res.Stdout),
+	}, nil
+}
+
+func checkNoData(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
 	var root struct {
 		Metadata struct {
 			OS struct {
@@ -88,32 +126,44 @@ func (t *TrivyAdapter) Scan(ctx context.Context, target model.Target) (model.Raw
 			Vulnerabilities []interface{} `json:"Vulnerabilities"`
 		} `json:"Results"`
 	}
-
-	noData := false
-	if len(res.Stdout) > 0 {
-		if err := json.Unmarshal(res.Stdout, &root); err == nil {
-			if root.Metadata.OS.EOSL {
-				hasFindings := false
-				for _, r := range root.Results {
-					if len(r.Vulnerabilities) > 0 {
-						hasFindings = true
-						break
-					}
-				}
-				if !hasFindings {
-					noData = true
+	if err := json.Unmarshal(payload, &root); err == nil {
+		if root.Metadata.OS.EOSL {
+			hasFindings := false
+			for _, r := range root.Results {
+				if len(r.Vulnerabilities) > 0 {
+					hasFindings = true
+					break
 				}
 			}
+			return !hasFindings
 		}
 	}
+	return false
+}
 
-	return model.RawResult{
-		Scanner:  t.Name(),
-		Target:   target,
-		Payload:  res.Stdout,
-		Format:   "trivy-json",
-		Started:  start,
-		Duration: time.Since(start),
-		NoData:   noData,
-	}, nil
+func mergeTrivyJSON(vulnJSON, miscJSON []byte) ([]byte, error) {
+	if len(vulnJSON) == 0 {
+		return miscJSON, nil
+	}
+	if len(miscJSON) == 0 {
+		return vulnJSON, nil
+	}
+
+	var report1, report2 map[string]interface{}
+	if err := json.Unmarshal(vulnJSON, &report1); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(miscJSON, &report2); err != nil {
+		return nil, err
+	}
+
+	results1, ok1 := report1["Results"].([]interface{})
+	results2, ok2 := report2["Results"].([]interface{})
+	if ok1 && ok2 {
+		report1["Results"] = append(results1, results2...)
+	} else if ok2 {
+		report1["Results"] = results2
+	}
+
+	return json.Marshal(report1)
 }

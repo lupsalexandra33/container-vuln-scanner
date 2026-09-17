@@ -32,11 +32,31 @@ type trivyReport struct {
 	Results []trivyResult `json:"Results"`
 }
 
+type trivyMisconfig struct {
+	ID          string `json:"ID"`
+	Title       string `json:"Title"`
+	Description string `json:"Description"`
+	Message     string `json:"Message"`
+	Severity    string `json:"Severity"`
+	Status      string `json:"Status"`
+}
+
+type trivySecret struct {
+	RuleID   string `json:"RuleID"`
+	Category string `json:"Category"`
+	Severity string `json:"Severity"`
+	Title    string `json:"Title"`
+	// Note: We intentionally do NOT include or parse the 'Match' or 'Code' fields
+	// to ensure secret values are never read or stored.
+}
+
 type trivyResult struct {
-	Target          string               `json:"Target"`
-	Class           string               `json:"Class"`
-	Type            string               `json:"Type"`
-	Vulnerabilities []trivyVulnerability `json:"Vulnerabilities"`
+	Target            string               `json:"Target"`
+	Class             string               `json:"Class"`
+	Type              string               `json:"Type"`
+	Vulnerabilities   []trivyVulnerability `json:"Vulnerabilities"`
+	Misconfigurations []trivyMisconfig     `json:"Misconfigurations"`
+	Secrets           []trivySecret        `json:"Secrets"`
 }
 
 type trivyVulnerability struct {
@@ -94,6 +114,12 @@ func (n TrivyNormalizer) Normalize(raw model.RawResult) ([]model.Finding, error)
 	for _, result := range report.Results {
 		for _, v := range result.Vulnerabilities {
 			findings = append(findings, n.convert(v, raw.Scanner))
+		}
+		for _, m := range result.Misconfigurations {
+			findings = append(findings, n.convertMisconfig(m, raw.Scanner, result.Target))
+		}
+		for _, s := range result.Secrets {
+			findings = append(findings, n.convertSecret(s, raw.Scanner, result.Target))
 		}
 	}
 	return findings, nil
@@ -238,4 +264,44 @@ func trimSpace(s string) string {
 		s = s[:len(s)-1]
 	}
 	return s
+}
+
+func (n TrivyNormalizer) convertMisconfig(m trivyMisconfig, scanner string, target string) model.Finding {
+	return model.Finding{
+		Class:       model.ClassMisconfiguration,
+		Scanner:     scanner,
+		Title:       m.Title,
+		Description: m.Description + "\n\n" + m.Message,
+		Location:    target,
+		Severities: []model.SeverityRating{
+			{
+				Severity: normaliseSeverity(m.Severity),
+				Source:   scanner,
+				Original: m.Severity,
+			},
+		},
+		Vulnerability: model.VulnRef{
+			Primary: model.VulnID{Scheme: model.SchemeUnknown, ID: m.ID},
+		},
+	}
+}
+
+func (n TrivyNormalizer) convertSecret(s trivySecret, scanner string, target string) model.Finding {
+	return model.Finding{
+		Class:       model.ClassSecret,
+		Scanner:     scanner,
+		Title:       s.Title,
+		Description: "Embedded secret detected: " + s.Category,
+		Location:    target,
+		Severities: []model.SeverityRating{
+			{
+				Severity: normaliseSeverity(s.Severity),
+				Source:   scanner,
+				Original: s.Severity,
+			},
+		},
+		Vulnerability: model.VulnRef{
+			Primary: model.VulnID{Scheme: model.SchemeUnknown, ID: s.RuleID},
+		},
+	}
 }
