@@ -214,11 +214,11 @@ func (f Finding) HasFix() bool {
 // invent agreement that was never established.
 func (f Finding) IsCorrelatable() bool {
 	switch f.Class {
+	case ClassMisconfiguration, ClassSecret:
+		return f.Vulnerability.Primary.ID != "" && f.Location != ""
 	case ClassVulnerability:
 		return f.Vulnerability.Primary.ID != "" && !f.Package.IsZero()
 	default:
-		// Misconfigurations and secrets have no CVE and no PURL. Their identity
-		// rules are defined where those scanners are integrated.
 		return false
 	}
 }

@@ -119,7 +119,7 @@ func scanLive(
 
 	orc := orchestrator.New(usable, opts...)
 	session, err := orc.Run(ctx, target, orchestrator.RunOptions{
-		Classes: []model.FindingClass{model.ClassVulnerability},
+		Classes: []model.FindingClass{model.ClassVulnerability, model.ClassMisconfiguration, model.ClassSecret},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("running scanners: %w", err)

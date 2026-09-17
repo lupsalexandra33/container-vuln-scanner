@@ -427,98 +427,182 @@ func writeScanTable(
 		return shown[i].Confidence < shown[j].Confidence
 	})
 
-	fmt.Fprintf(w, "%-22s %-28s %-9s %-6s %s\n",
-		"VULNERABILITY", "PACKAGE", "SEVERITY", "CONF", "SOURCES")
-	fmt.Fprintln(w, strings.Repeat("-", 100))
-
+	var vulns, misconfigs, secrets []model.ConsolidatedFinding
 	for _, f := range shown {
-		pkg := f.Package.Name
-		if pkg == "" {
-			pkg = "-"
+		switch f.Class {
+		case model.ClassMisconfiguration:
+			misconfigs = append(misconfigs, f)
+		case model.ClassSecret:
+			secrets = append(secrets, f)
+		default:
+			vulns = append(vulns, f)
 		}
-		if v := f.InstalledVersion; v != "" {
-			pkg += "@" + v
-		}
+	}
 
-		in := f.ConfidenceInputs()
-		sources := fmt.Sprintf("%d/%d %s",
-			in.AgreeingCount, in.ParticipatingCount, strings.Join(f.ReportedBy(), ","))
-		if missed := f.RanAndMissedBy(); len(missed) > 0 {
-			sources += " (missed by " + strings.Join(missed, ",") + ")"
+	if len(vulns) > 0 || (len(misconfigs) == 0 && len(secrets) == 0) {
+		fmt.Fprintf(w, "%-22s %-28s %-9s %-6s %s\n",
+			"VULNERABILITY", "PACKAGE", "SEVERITY", "CONF", "SOURCES")
+		fmt.Fprintln(w, strings.Repeat("-", 100))
+		for _, f := range vulns {
+			printFindingRow(w, f)
 		}
-		if nodata := f.HadNoDataFor(); len(nodata) > 0 {
-			sources += " (no data: " + strings.Join(nodata, ",") + ")"
+	}
+
+	if len(misconfigs) > 0 {
+		fmt.Fprintf(w, "\n%-40s %-20s %-9s %s\n",
+			"MISCONFIGURATION", "LOCATION", "SEVERITY", "SOURCES")
+		fmt.Fprintln(w, strings.Repeat("-", 100))
+		for _, f := range misconfigs {
+			printMisconfigRow(w, f)
 		}
+	}
 
-		fmt.Fprintf(w, "%-22s %-28s %-9s %-6.2f %s\n",
-			truncate(f.Vulnerability.PreferredID().ID, 22),
-			truncate(pkg, 28),
-			f.Severity,
-			f.Confidence,
-			sources,
-		)
-
-		// Layer origin is provenance, not a verdict: a later layer can overwrite
-		// or delete what an earlier one installed, so "the vulnerable package in
-		// the final image came from here" is supportable where "this layer is
-		// vulnerable" is not.
-		if f.Origin != nil && (f.Origin.Instruction != "" || f.Origin.LayerIndex >= 0 || f.Origin.LayerDigest != "") {
-			var desc string
-			if f.Origin.LayerIndex >= 0 {
-				desc = fmt.Sprintf("layer #%d", f.Origin.LayerIndex)
-				if f.Origin.Instruction != "" {
-					desc += " (" + truncate(f.Origin.Instruction, 50) + ")"
-				}
-			} else if f.Origin.LayerDigest != "" {
-				desc = "layer " + truncate(f.Origin.LayerDigest, 22)
-			}
-			if desc != "" {
-				fmt.Fprintf(w, "%-22s   origin: %s\n", "", desc)
-			}
-		}
-
-		// A resolved conflict is a decision made on the reader's behalf. It is
-		// shown with its reason so that it can be checked rather than trusted.
-		for _, c := range f.Conflicts {
-			fmt.Fprintf(w, "%-22s   %s\n", "", correlate.ConflictSummary([]model.Conflict{c}))
+	if len(secrets) > 0 {
+		fmt.Fprintf(w, "\n%-40s %-20s %-9s %s\n",
+			"SECRET", "LOCATION", "SEVERITY", "SOURCES")
+		fmt.Fprintln(w, strings.Repeat("-", 100))
+		for _, f := range secrets {
+			printSecretRow(w, f)
 		}
 	}
 
 	writeScanSummary(w, findings, len(shown))
 }
 
-func writeScanSummary(w io.Writer, findings []model.ConsolidatedFinding, shownCount int) {
-	var agreed, disputed, singleSource, withConflicts, fixable int
-	bySeverity := map[model.Severity]int{}
+func printFindingRow(w io.Writer, f model.ConsolidatedFinding) {
+	pkg := f.Package.Name
+	if pkg == "" {
+		pkg = "-"
+	}
+	if v := f.InstalledVersion; v != "" {
+		pkg += "@" + v
+	}
 
-	for _, f := range findings {
-		bySeverity[f.Severity]++
-		if len(f.ReportedBy()) > 1 {
-			agreed++
+	in := f.ConfidenceInputs()
+	sources := fmt.Sprintf("%d/%d %s",
+		in.AgreeingCount, in.ParticipatingCount, strings.Join(f.ReportedBy(), ","))
+	if missed := f.RanAndMissedBy(); len(missed) > 0 {
+		sources += " (missed by " + strings.Join(missed, ",") + ")"
+	}
+	if nodata := f.HadNoDataFor(); len(nodata) > 0 {
+		sources += " (no data: " + strings.Join(nodata, ",") + ")"
+	}
+
+	fmt.Fprintf(w, "%-22s %-28s %-9s %-6.2f %s\n",
+		truncate(f.Vulnerability.PreferredID().ID, 22),
+		truncate(pkg, 28),
+		f.Severity,
+		f.Confidence,
+		sources,
+	)
+
+	if f.Origin != nil && (f.Origin.Instruction != "" || f.Origin.LayerIndex >= 0 || f.Origin.LayerDigest != "") {
+		var desc string
+		if f.Origin.LayerIndex >= 0 {
+			desc = fmt.Sprintf("layer #%d", f.Origin.LayerIndex)
+			if f.Origin.Instruction != "" {
+				desc += " (" + truncate(f.Origin.Instruction, 50) + ")"
+			}
+		} else if f.Origin.LayerDigest != "" {
+			desc = "layer " + truncate(f.Origin.LayerDigest, 22)
 		}
-		if f.IsDisputed() {
-			disputed++
-		}
-		if f.IsSingleSource() {
-			singleSource++
-		}
-		if len(f.Conflicts) > 0 {
-			withConflicts++
-		}
-		if f.HasFix() {
-			fixable++
+		if desc != "" {
+			fmt.Fprintf(w, "%-22s   origin: %s\n", "", desc)
 		}
 	}
 
-	fmt.Fprintf(w, "\n%d shown of %d total\n", shownCount, len(findings))
-	fmt.Fprintf(w, "  severity      %d critical, %d high, %d medium, %d low, %d negligible, %d unknown\n",
-		bySeverity[model.SeverityCritical], bySeverity[model.SeverityHigh],
-		bySeverity[model.SeverityMedium], bySeverity[model.SeverityLow],
-		bySeverity[model.SeverityNegligible], bySeverity[model.SeverityUnknown])
-	fmt.Fprintf(w, "  agreement     %d confirmed by more than one scanner, %d disputed, %d single source\n",
-		agreed, disputed, singleSource)
-	fmt.Fprintf(w, "  conflicts     %d findings had disagreeing sources, resolved and recorded\n", withConflicts)
-	fmt.Fprintf(w, "  remediation   %d of %d have a fix available\n", fixable, len(findings))
+	for _, c := range f.Conflicts {
+		fmt.Fprintf(w, "%-22s   %s\n", "", correlate.ConflictSummary([]model.Conflict{c}))
+	}
+}
+
+func printMisconfigRow(w io.Writer, f model.ConsolidatedFinding) {
+	in := f.ConfidenceInputs()
+	sources := fmt.Sprintf("%d/%d %s",
+		in.AgreeingCount, in.ParticipatingCount, strings.Join(f.ReportedBy(), ","))
+
+	var title, location string
+	for _, v := range f.Verdicts {
+		if v.Finding != nil {
+			title = v.Finding.Title
+			location = v.Finding.Location
+			break
+		}
+	}
+
+	fmt.Fprintf(w, "%-40s %-20s %-9s %s\n",
+		truncate(title, 40),
+		truncate(location, 20),
+		f.Severity,
+		sources,
+	)
+}
+
+func printSecretRow(w io.Writer, f model.ConsolidatedFinding) {
+	in := f.ConfidenceInputs()
+	sources := fmt.Sprintf("%d/%d %s",
+		in.AgreeingCount, in.ParticipatingCount, strings.Join(f.ReportedBy(), ","))
+
+	var title, location string
+	for _, v := range f.Verdicts {
+		if v.Finding != nil {
+			title = v.Finding.Title
+			location = v.Finding.Location
+			break
+		}
+	}
+
+	fmt.Fprintf(w, "%-40s %-20s %-9s %s\n",
+		truncate(title, 40),
+		truncate(location, 20),
+		f.Severity,
+		sources,
+	)
+}
+
+func writeScanSummary(w io.Writer, findings []model.ConsolidatedFinding, shownCount int) {
+	var agreed, disputed, singleSource, withConflicts, fixable int
+	var vCount, mCount, sCount int
+	bySeverity := map[model.Severity]int{}
+
+	for _, f := range findings {
+		switch f.Class {
+		case model.ClassMisconfiguration:
+			mCount++
+		case model.ClassSecret:
+			sCount++
+		default:
+			vCount++
+			bySeverity[f.Severity]++
+			if len(f.ReportedBy()) > 1 {
+				agreed++
+			}
+			if f.IsDisputed() {
+				disputed++
+			}
+			if f.IsSingleSource() {
+				singleSource++
+			}
+			if len(f.Conflicts) > 0 {
+				withConflicts++
+			}
+			if f.HasFix() {
+				fixable++
+			}
+		}
+	}
+
+	fmt.Fprintf(w, "\n%d shown of %d total findings (%d vulnerabilities, %d misconfigurations, %d secrets)\n", shownCount, len(findings), vCount, mCount, sCount)
+	if vCount > 0 {
+		fmt.Fprintf(w, "  severity      %d critical, %d high, %d medium, %d low, %d negligible, %d unknown\n",
+			bySeverity[model.SeverityCritical], bySeverity[model.SeverityHigh],
+			bySeverity[model.SeverityMedium], bySeverity[model.SeverityLow],
+			bySeverity[model.SeverityNegligible], bySeverity[model.SeverityUnknown])
+		fmt.Fprintf(w, "  agreement     %d confirmed by more than one scanner, %d disputed, %d single source\n",
+			agreed, disputed, singleSource)
+		fmt.Fprintf(w, "  conflicts     %d findings had disagreeing sources, resolved and recorded\n", withConflicts)
+		fmt.Fprintf(w, "  remediation   %d of %d have a fix available\n", fixable, vCount)
+	}
 }
 
 // writeWeightExplanation prints the trust weight applied to each scanner in
