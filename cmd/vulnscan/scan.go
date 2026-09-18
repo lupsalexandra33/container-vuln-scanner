@@ -25,7 +25,7 @@ import (
 // toolVersion is reported to the TUI/web dashboard header. If the binary
 // already carries a real version (e.g. set via -ldflags in the release
 // build, or a var in main.go), wire that in here instead of this placeholder.
-const toolVersion = "dev"
+var toolVersion = "dev"
 
 // scanSource pairs a scanner name with the format its output is in.
 type scanSource struct {
