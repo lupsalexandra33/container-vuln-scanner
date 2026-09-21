@@ -217,3 +217,20 @@ func (p PURL) Ecosystem() string { return p.Type }
 // still be reported, but cannot be correlated on exact identity — it falls to
 // approximate matching, and to the uncorrelated category if that fails too.
 func (p PURL) IsZero() bool { return p.Type == "" && p.Name == "" }
+
+// IdentityWithinImage returns the package identity used to correlate findings
+// from a single scan.
+//
+// Identity qualifiers are dropped because within one image they are properties
+// of the image, not of the package: every package in a scan shares the same
+// architecture and distribution. They carry no information here, and keeping
+// them splits one finding into several whenever a scanner does not report them —
+// Trivy, Grype and Docker Scout emit arch and distro, Clair emits neither.
+//
+// Across images they still matter, which is why Canonical and Equal keep them:
+// the same version in debian-12 and debian-13 carries different backports.
+func (p PURL) IdentityWithinImage() string {
+	q := p
+	q.Qualifiers = nil
+	return q.Canonical()
+}
