@@ -16,11 +16,12 @@ docker-compose up -d
 ### Readiness Checks and First-Run Duration
 
 When you start the Clair stack for the first time:
-1. **Database Population**: Clair will immediately begin downloading vulnerability databases from multiple sources (Debian, Ubuntu, Alpine, etc.) into the PostgreSQL database.
+1. **Database Population**: Clair will immediately begin downloading vulnerability databases from multiple sources (Debian, Ubuntu, Alpine) into the PostgreSQL database.
 2. **First-Run Duration**: Depending on your internet connection and CPU, this initial population can take anywhere from **5 to 15 minutes**.
-3. **Readiness Check**: You can check if Clair is ready to accept scans by hitting its metrics/health API:
+3. **Readiness Check**: To know if Clair is ready to accept scans, check the logs and look for the following message:
    ```bash
-   curl -f http://localhost:6061/healthz
+   cd deploy
+   docker compose logs clair
+   [...]
+   clair-1  | {"level":"info",[...],"message":"GC completed"}
    ```
-   The `docker-compose.yml` file includes a built-in healthcheck that runs this endpoint every 10 seconds.
-

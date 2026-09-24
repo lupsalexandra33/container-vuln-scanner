@@ -39,6 +39,7 @@ func NewRegistry() *Registry {
 	r.Register(GrypeNormalizer{})
 	r.Register(OSVNormalizer{})
 	r.Register(ScoutNormalizer{})
+	r.Register(ClairNormalizer{})
 	return r
 }
 
