@@ -172,7 +172,7 @@ func correlationKey(f model.Finding, canonical map[string]model.VulnID) string {
 	if c, ok := canonical[id.ID]; ok {
 		id = c
 	}
-	return id.ID + "|" + f.Package.Canonical()
+	return id.ID + "|" + f.Package.IdentityWithinImage()
 }
 
 // consolidate merges the findings in one group and records a verdict for every
@@ -187,7 +187,7 @@ func consolidate(
 	c := model.ConsolidatedFinding{
 		Class:            first.Class,
 		Vulnerability:    mergeAliases(ids),
-		Package:          first.Package,
+		Package:          mostSpecificPackage(findings),
 		InstalledVersion: first.InstalledVersion,
 		Method:           methodFor(first),
 	}
@@ -332,4 +332,18 @@ func originFromWithProvenance(findings []model.Finding, prov *layers.Provenance)
 		}
 	}
 	return nil
+}
+
+// mostSpecificPackage returns the identity with the most qualifiers among the
+// scanners that reported a finding. Correlation ignores qualifiers within an
+// image, but the consolidated finding should still carry the most detailed
+// identity any scanner supplied rather than whichever happened to come first.
+func mostSpecificPackage(findings []model.Finding) model.PURL {
+	best := findings[0].Package
+	for _, f := range findings[1:] {
+		if len(f.Package.Qualifiers) > len(best.Qualifiers) {
+			best = f.Package
+		}
+	}
+	return best
 }

@@ -318,3 +318,48 @@ func TestCorrelateRealFixtures(t *testing.T) {
 		t.Errorf("consolidated %d findings from %d inputs — nothing was merged", len(out), len(all))
 	}
 }
+
+// TestCorrelateIgnoresQualifiersWithinOneImage is the Clair case: Trivy reports
+// arch and distro, Clair reports neither, and both describe the same package in
+// the same image. Treating the missing qualifiers as a different package would
+// turn one agreed finding into two single-source ones.
+func TestCorrelateIgnoresQualifiersWithinOneImage(t *testing.T) {
+	out := Correlate(
+		[]model.Finding{
+			vuln(t, "trivy", "CVE-2011-3374", "pkg:deb/debian/apt@3.0.3?arch=amd64&distro=debian-13.1"),
+			vuln(t, "clair", "CVE-2011-3374", "pkg:deb/debian/apt@3.0.3"),
+		},
+		[]Participant{
+			{Name: "trivy", Capabilities: vulnScanner, Ran: true},
+			{Name: "clair", Capabilities: vulnScanner, Ran: true},
+		},
+	)
+
+	if len(out) != 1 {
+		t.Fatalf("got %d findings, want 1 — same CVE, same package, same image", len(out))
+	}
+	if got := out[0].ReportedBy(); len(got) != 2 {
+		t.Errorf("ReportedBy() = %v, want both scanners", got)
+	}
+	if _, ok := out[0].Package.Qualifiers["arch"]; !ok {
+		t.Error("the consolidated finding should keep the most detailed identity any scanner supplied")
+	}
+}
+
+// TestCorrelateStillSeparatesDifferentPackages guards the other direction:
+// dropping qualifiers must not merge packages that differ in name or version.
+func TestCorrelateStillSeparatesDifferentPackages(t *testing.T) {
+	out := Correlate(
+		[]model.Finding{
+			vuln(t, "trivy", "CVE-2023-4813", "pkg:deb/debian/libc6@2.31-13?arch=amd64"),
+			vuln(t, "clair", "CVE-2023-4813", "pkg:deb/debian/libc-bin@2.31-13"),
+		},
+		[]Participant{
+			{Name: "trivy", Capabilities: vulnScanner, Ran: true},
+			{Name: "clair", Capabilities: vulnScanner, Ran: true},
+		},
+	)
+	if len(out) != 2 {
+		t.Errorf("got %d findings, want 2 — libc6 and libc-bin are different packages", len(out))
+	}
+}
