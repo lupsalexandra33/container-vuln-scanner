@@ -46,6 +46,7 @@ func availableScanners(ctx context.Context) (usable []scanner.Scanner, unavailab
 		adapters.NewGrypeAdapter(),
 		adapters.NewClairAdapter(clairURL),
 		adapters.NewScoutAdapter(),
+		adapters.NewOSVAdapter(),
 	}
 
 	unavailable = map[string]string{}
