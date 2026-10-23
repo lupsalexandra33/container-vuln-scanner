@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/lupsalexandra33/container-vuln-scanner/pkg/model"
@@ -100,20 +101,14 @@ func (c *ClairAdapter) Scan(ctx context.Context, target model.Target) (model.Raw
 }
 
 func (c *ClairAdapter) submitForIndexing(ctx context.Context, reference string) (string, error) {
-	// In a real implementation, we would resolve the reference to an OCI manifest
-	// and submit it to /indexer/api/v1/index_report.
-	// For this adapter abstraction proof, we simulate the submission with a placeholder payload
-	// or assume a helper service provides the manifest JSON.
-
-	// Assuming `reference` is already a digest or we use a helper to construct the manifest request.
-	// For demonstration of the async adapter loop, we use a dummy manifest submission.
-	manifest := map[string]interface{}{
-		"hash":   reference,
-		"layers": []interface{}{},
+	// 1. Resolve the OCI manifest from Docker Hub
+	manifestJSON, err := c.resolveDockerHubManifest(ctx, reference)
+	if err != nil {
+		return "", fmt.Errorf("resolving manifest: %w", err)
 	}
-	b, _ := json.Marshal(manifest)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL+"/indexer/api/v1/index_report", bytes.NewReader(b))
+	// 2. Submit the generated Clair manifest to the indexer
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL+"/indexer/api/v1/index_report", bytes.NewReader(manifestJSON))
 	if err != nil {
 		return "", err
 	}
@@ -131,17 +126,131 @@ func (c *ClairAdapter) submitForIndexing(ctx context.Context, reference string) 
 	}
 
 	var result struct {
-		Hash string `json:"hash"`
+		Hash         string `json:"hash"`
+		ManifestHash string `json:"manifest_hash"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
 	}
 
-	// Fallback to the reference if the dummy API didn't return a hash.
-	if result.Hash == "" {
-		return reference, nil
+	if result.ManifestHash != "" {
+		return result.ManifestHash, nil
 	}
 	return result.Hash, nil
+}
+
+// resolveDockerHubManifest fetches the layer digests from Docker Hub and constructs a Clair IndexReport.
+func (c *ClairAdapter) resolveDockerHubManifest(ctx context.Context, reference string) ([]byte, error) {
+	repo := reference
+	tag := "latest"
+	if parts := strings.Split(reference, ":"); len(parts) == 2 {
+		repo = parts[0]
+		tag = parts[1]
+	}
+	if !strings.Contains(repo, "/") {
+		repo = "library/" + repo
+	}
+
+	// 1. Get anonymous pull token
+	resp, err := http.Get(fmt.Sprintf("https://auth.docker.io/token?service=registry.docker.io&scope=repository:%s:pull", repo))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("image not found on docker hub (local images are not supported by Clair v4)")
+	}
+
+	var tokenResp struct{ Token string }
+	json.NewDecoder(resp.Body).Decode(&tokenResp)
+	token := tokenResp.Token
+
+	// 2. Get manifest list
+	req, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://registry-1.docker.io/v2/%s/manifests/%s", repo, tag), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json")
+	resp2, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp2.Body.Close()
+
+	var manifestList struct {
+		Manifests []struct {
+			Digest   string `json:"digest"`
+			Platform struct {
+				Architecture string `json:"architecture"`
+			} `json:"platform"`
+		} `json:"manifests"`
+		// If it's not a list but a direct manifest, Config will be populated
+		Config struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+		Layers []struct {
+			Digest string `json:"digest"`
+		} `json:"layers"`
+	}
+	json.NewDecoder(resp2.Body).Decode(&manifestList)
+
+	var actualManifest = manifestList
+
+	// If it was a list, find the amd64 manifest and fetch it
+	if len(manifestList.Manifests) > 0 {
+		var digest string
+		for _, m := range manifestList.Manifests {
+			if m.Platform.Architecture == "amd64" {
+				digest = m.Digest
+				break
+			}
+		}
+		if digest == "" {
+			digest = manifestList.Manifests[0].Digest
+		}
+
+		req3, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://registry-1.docker.io/v2/%s/manifests/%s", repo, digest), nil)
+		req3.Header.Set("Authorization", "Bearer "+token)
+		req3.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json")
+		resp3, err := c.client.Do(req3)
+		if err != nil {
+			return nil, err
+		}
+		defer resp3.Body.Close()
+		json.NewDecoder(resp3.Body).Decode(&actualManifest)
+	}
+
+	if actualManifest.Config.Digest == "" {
+		return nil, fmt.Errorf("failed to extract config digest (image might not exist on Docker Hub)")
+	}
+
+	// 3. Construct Clair Manifest
+	type ClairLayer struct {
+		Hash    string              `json:"hash"`
+		URI     string              `json:"uri"`
+		Headers map[string][]string `json:"headers"`
+	}
+	type ClairManifest struct {
+		Hash   string       `json:"hash"`
+		Layers []ClairLayer `json:"layers"`
+	}
+
+	cm := ClairManifest{
+		Hash:   actualManifest.Config.Digest,
+		Layers: make([]ClairLayer, 0, len(actualManifest.Layers)),
+	}
+
+	headers := map[string][]string{
+		"Authorization": {"Bearer " + token},
+	}
+
+	for _, l := range actualManifest.Layers {
+		cm.Layers = append(cm.Layers, ClairLayer{
+			Hash:    l.Digest,
+			URI:     fmt.Sprintf("https://registry-1.docker.io/v2/%s/blobs/%s", repo, l.Digest),
+			Headers: headers,
+		})
+	}
+
+	return json.Marshal(cm)
 }
 
 func (c *ClairAdapter) pollIndexing(ctx context.Context, digest string) error {
